@@ -1,7 +1,7 @@
 %define	name	grep
-%define version 2.5.1a
+%define version 2.5.3
 %define _bindir /bin
-%define release %mkrel 2
+%define release %mkrel 1
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		%{name}
@@ -10,25 +10,35 @@ Release:	%{release}
 License:	GPL
 Group:		Text tools
 Source0:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.bz2
-Patch1:		grep-2.5.1-i18n-0.1.patch
-Patch2:		grep-2.5.1-oi.patch
-Patch3:		grep-2.5.1-manpage.patch
-Patch4:		grep-2.5.1-color.patch
-Patch5:		grep-2.5.1-icolor.patch
-Patch6:		grep-P.patch
-Patch7:		grep-2.5.1a-wordmatch.patch
+
 Patch8:		grep-2.5.1a-mbcset.diff
-Patch9:		grep-2.5.1a-skip-devices.patch
-Patch10:	grep-2.5.1-nb.patch
+# fix tests:
+# - GREP_COLOR conflicts with test foad1.sh
+# - in yesno.sh "-m 5 -C 1" test expects the context not to be printed after 5 matches,
+#   it seems quite valid to display the context even in that case. (same for -m 2 -C 1)
+Patch11:	grep-2.5.3-fix-tests.patch
+
+# patches from debian
+Patch100:	2-man_rgrep.patch
+Patch101:	55-bigfile.patch
+Patch102:	60-dfa.c-case_fold.patch
+Patch103:	61-dfa.c-case_fold-charclass.patch
+Patch104:	63-dfa.c-case_fold-range.patch
+Patch105:	64-egf-speedup.patch
+Patch106:	65-dfa-optional.patch
+Patch107:	66-match_icase.patch
+Patch108:	67-w.patch
+Patch109:	68-no-grep.texi.patch
+
 URL:		http://www.gnu.org/software/grep/grep.html
 Buildroot:	%{_tmppath}/%{name}-%{version}-%{release}-buildroot
-BuildRequires:	gettext pcre-devel texinfo
+BuildRequires:	gettext texinfo
 
 %description
 The GNU versions of commonly used grep utilities.  Grep searches one or
 more input files for lines which contain a match to a specified pattern
 and then prints the matching lines.  GNU's grep utilities include grep,
-egrep and fgrep.  
+egrep and fgrep.
 
 You should install grep on your system, because it is a very useful utility
 for searching through text files, for system administration tasks, etc.
@@ -52,17 +62,20 @@ Install this package if you want info documentation on grep.
 
 %prep
 %setup -q
-%patch1 -p1 -b .i18n
-%patch2 -p1 -b .oi
-%patch3 -p1 -b .manpage
-%patch4 -p1 -b .color
-%patch5 -p1 -b .icolor
-%patch6 -p1 -b .P
-%patch7 -p0 -b .wordmatch
+
 %patch8 -p0 -b .mbcset
-%patch9 -p0 -b .skip_devs
-%patch10 -p0 -b .nb
-rename no nb po/no.*
+%patch11 -p1
+
+%patch100 -p0
+%patch101 -p0
+%patch102 -p0
+%patch103 -p0
+%patch104 -p0
+%patch105 -p0
+%patch106 -p0
+%patch107 -p0
+%patch108 -p0
+%patch109 -p0
 
 %build
 rm -f m4/header.m4 m4/init.m4 m4/install.m4 m4/largefile.m4 m4/missing.m4 m4/sanity.m4
@@ -70,17 +83,10 @@ rm -f m4/header.m4 m4/init.m4 m4/install.m4 m4/largefile.m4 m4/missing.m4 m4/san
 #test -f po/Makevars || mv po/Makevars.template po/Makevars
 %configure2_5x \
 	--exec-prefix=/ \
-	--without-included-regex
+	--disable-perl-regexp
 
 %make
 
-# (gb) why does spencer bre test #16 fails?
-# (gw) Spencer test #55 has a syntax error: echo '-'| grep -E -e '(*)b'
-# (fpons) removed make check as glibc is bogus currently.
-#make -k check || echo "make check failed"
-# (abel) however, if --with-included-regex is used, all test suite
-#        passed flawlessly
-#(peroyvind) reenabled test as it now works:)
 %check
 make check
 
