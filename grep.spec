@@ -31,7 +31,6 @@ Patch108:	67-w.patch
 Patch109:	68-no-grep.texi.patch
 
 URL:		http://www.gnu.org/software/grep/grep.html
-Buildroot:	%{_tmppath}/%{name}-%{version}-%{release}-buildroot
 BuildRequires:	gettext texinfo
 
 %description
