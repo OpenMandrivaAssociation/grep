@@ -1,7 +1,7 @@
 %define	name	grep
 %define version 2.5.3
 %define _bindir /bin
-%define release %mkrel 1
+%define release %mkrel 2
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		%{name}
