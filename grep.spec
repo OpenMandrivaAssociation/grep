@@ -82,8 +82,7 @@ rm -f m4/header.m4 m4/init.m4 m4/install.m4 m4/largefile.m4 m4/missing.m4 m4/san
 ./autogen.sh
 #test -f po/Makevars || mv po/Makevars.template po/Makevars
 %configure2_5x \
-	--exec-prefix=/ \
-	--disable-perl-regexp
+	--exec-prefix=/
 
 %make
 
