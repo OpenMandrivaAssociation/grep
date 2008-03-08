@@ -1,7 +1,7 @@
 %define	name	grep
 %define version 2.5.3
 %define _bindir /bin
-%define release %mkrel 2
+%define release %mkrel 3
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		%{name}
@@ -33,6 +33,7 @@ Patch109:	68-no-grep.texi.patch
 URL:		http://www.gnu.org/software/grep/grep.html
 Buildroot:	%{_tmppath}/%{name}-%{version}-%{release}-buildroot
 BuildRequires:	gettext texinfo
+BuildRequires:	pcre-devel
 
 %description
 The GNU versions of commonly used grep utilities.  Grep searches one or
