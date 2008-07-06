@@ -1,23 +1,20 @@
-%define	name	grep
-%define version 2.5.3
 %define _bindir /bin
-%define release %mkrel 4
 
 Summary:	The GNU versions of grep pattern matching utilities
-Name:		%{name}
-Version:	%{version}
-Release:	%{release}
+Name:		grep
+Version:	2.5.3
+Release:	%mkrel 5
 License:	GPL
 Group:		Text tools
+URL:		http://www.gnu.org/software/grep/grep.html
 Source0:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.bz2
-
 Patch8:		grep-2.5.1a-mbcset.diff
 # fix tests:
 # - GREP_COLOR conflicts with test foad1.sh
 # - in yesno.sh "-m 5 -C 1" test expects the context not to be printed after 5 matches,
 #   it seems quite valid to display the context even in that case. (same for -m 2 -C 1)
 Patch11:	grep-2.5.3-fix-tests.patch
-
+Patch12:	grep-broken_foad1_tests.diff
 # patches from debian
 Patch100:	2-man_rgrep.patch
 Patch101:	55-bigfile.patch
@@ -29,11 +26,12 @@ Patch106:	65-dfa-optional.patch
 Patch107:	66-match_icase.patch
 Patch108:	67-w.patch
 Patch109:	68-no-grep.texi.patch
-
-URL:		http://www.gnu.org/software/grep/grep.html
-Buildroot:	%{_tmppath}/%{name}-%{version}-%{release}-buildroot
-BuildRequires:	gettext texinfo
+Patch110:	70-man_apostrophe.patch
+Patch111:	75-dfa_calloc.patch
+BuildRequires:	gettext
 BuildRequires:	pcre-devel
+BuildRequires:	texinfo
+Buildroot:	%{_tmppath}/%{name}-%{version}-%{release}-buildroot
 
 %description
 The GNU versions of commonly used grep utilities.  Grep searches one or
@@ -47,8 +45,8 @@ for searching through text files, for system administration tasks, etc.
 %package	doc
 Summary:	Grep documentation in info format
 Group:		Books/Computer books
-Requires(post):	info-install
-Requires(preun):	info-install
+Requires(post): info-install
+Requires(preun): info-install
 
 %description	doc
 The GNU versions of commonly used grep utilities.  Grep searches one or
@@ -62,10 +60,12 @@ for searching through text files, for system administration tasks, etc.
 Install this package if you want info documentation on grep.
 
 %prep
+
 %setup -q
 
 %patch8 -p0 -b .mbcset
 %patch11 -p1
+%patch12 -p0
 
 %patch100 -p0
 %patch101 -p0
@@ -77,6 +77,8 @@ Install this package if you want info documentation on grep.
 %patch107 -p0
 %patch108 -p0
 %patch109 -p0
+%patch110 -p0
+%patch111 -p1
 
 %build
 rm -f m4/header.m4 m4/init.m4 m4/install.m4 m4/largefile.m4 m4/missing.m4 m4/sanity.m4
@@ -91,8 +93,9 @@ rm -f m4/header.m4 m4/init.m4 m4/install.m4 m4/largefile.m4 m4/missing.m4 m4/san
 make check
 
 %install
-rm -rf $RPM_BUILD_ROOT
-%{makeinstall_std}
+rm -rf %{buildroot}
+
+%makeinstall_std
 
 %find_lang %{name}
 
@@ -103,7 +106,7 @@ rm -rf $RPM_BUILD_ROOT
 %_remove_install_info %{name}.info
 
 %clean
-rm -rf $RPM_BUILD_ROOT
+rm -rf %{buildroot}
 
 %files -f %{name}.lang
 %defattr(-,root,root)
@@ -115,5 +118,3 @@ rm -rf $RPM_BUILD_ROOT
 %defattr(-,root,root)
 %doc COPYING
 %{_infodir}/*.info*
-
-
