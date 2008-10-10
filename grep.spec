@@ -3,7 +3,7 @@
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
 Version:	2.5.3
-Release:	%mkrel 6
+Release:	%mkrel 7
 License:	GPL
 Group:		Text tools
 URL:		http://www.gnu.org/software/grep/grep.html
@@ -75,7 +75,7 @@ Install this package if you want info documentation on grep.
 %patch103 -p0
 %patch104 -p0
 %patch105 -p0
-#patch106 -p0 # disabled due to https://qa.mandriva.com/show_bug.cgi?id=41922
+%patch106 -p0
 %patch107 -p0
 %patch108 -p0
 %patch109 -p0
@@ -87,6 +87,7 @@ rm -f m4/header.m4 m4/init.m4 m4/install.m4 m4/largefile.m4 m4/missing.m4 m4/san
 ./autogen.sh
 #test -f po/Makevars || mv po/Makevars.template po/Makevars
 %configure2_5x \
+    --without-included-regex \
     --exec-prefix=/
 
 %make
