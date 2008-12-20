@@ -3,7 +3,7 @@
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
 Version:	2.5.3
-Release:	%mkrel 7
+Release:	%mkrel 8
 License:	GPL
 Group:		Text tools
 URL:		http://www.gnu.org/software/grep/grep.html
@@ -29,6 +29,7 @@ Patch108:	67-w.patch
 Patch109:	68-no-grep.texi.patch
 Patch110:	70-man_apostrophe.patch
 Patch111:	75-dfa_calloc.patch
+Patch112:	grep-2.5.3-format_not_a_string_literal_and_no_format_arguments.diff
 BuildRequires:	gettext
 BuildRequires:	pcre-devel
 BuildRequires:	texinfo
@@ -81,6 +82,7 @@ Install this package if you want info documentation on grep.
 %patch109 -p0
 %patch110 -p0
 %patch111 -p1
+%patch112 -p0 -b .format_not_a_string_literal_and_no_format_arguments
 
 %build
 rm -f m4/header.m4 m4/init.m4 m4/install.m4 m4/largefile.m4 m4/missing.m4 m4/sanity.m4
