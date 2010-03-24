@@ -2,14 +2,14 @@
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
-Version:	2.5.4
-Release:	%mkrel 3
+Version:	2.6
+Release:	%mkrel 1
 License:	GPLv3
 Group:		Text tools
 URL:		http://www.gnu.org/software/grep/grep.html
-Source0:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.bz2
+Source0:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.xz
 Source1:	%{SOURCE0}.sig
-Patch8:		grep-2.5.1a-mbcset.diff
+#Patch8:		grep-2.5.1a-mbcset.diff
 # patches from debian
 Patch100:	2-man_rgrep.patch
 Patch101:	55-bigfile.patch
@@ -58,19 +58,21 @@ Install this package if you want info documentation on grep.
 
 %setup -q
 
-%patch8 -p0 -b .mbcset
+#%patch8 -p0 -b .mbcset
 
 %patch100 -p0
-%patch101 -p0
-%patch102 -p0
-%patch103 -p0
-%patch104 -p0
-%patch105 -p0
-%patch106 -p0
-%patch107 -p0
-%patch108 -p0
+#%patch101 -p0
+# upstream
+#%patch102 -p0
+%patch103 -p1
+# fixed
+#%patch104 -p0
+#%patch105 -p0
+#%patch106 -p0
+#%patch107 -p0
+#%patch108 -p0
 %patch110 -p0
-%patch112 -p0 -b .format_not_a_string_literal_and_no_format_arguments
+#%patch112 -p0 -b .format_not_a_string_literal_and_no_format_arguments
 
 %build
 %configure2_5x \
