@@ -2,7 +2,7 @@
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
-Version:	2.6
+Version:	2.6.1
 Release:	%mkrel 1
 License:	GPLv3
 Group:		Text tools
@@ -13,7 +13,6 @@ Source1:	%{SOURCE0}.sig
 # patches from debian
 Patch100:	2-man_rgrep.patch
 Patch101:	55-bigfile.patch
-Patch102:	60-dfa.c-case_fold.patch
 Patch103:	61-dfa.c-case_fold-charclass.patch
 Patch104:	63-dfa.c-case_fold-range.patch
 Patch105:	64-egf-speedup.patch
@@ -21,7 +20,6 @@ Patch106:	65-dfa-optional.patch
 Patch107:	66-match_icase.patch
 Patch108:	67-w.patch
 Patch110:	70-man_apostrophe.patch
-Patch112:	grep-2.5.3-format_not_a_string_literal_and_no_format_arguments.diff
 BuildRequires:	gettext
 BuildRequires:	pcre-devel
 BuildRequires:	texinfo
@@ -62,17 +60,14 @@ Install this package if you want info documentation on grep.
 
 %patch100 -p0
 #%patch101 -p0
-# upstream
-#%patch102 -p0
 %patch103 -p1
-# fixed
+# eugeni: seems to be fixed upstream, but let's leave them for a couple of released to make sure
 #%patch104 -p0
 #%patch105 -p0
 #%patch106 -p0
 #%patch107 -p0
 #%patch108 -p0
 %patch110 -p0
-#%patch112 -p0 -b .format_not_a_string_literal_and_no_format_arguments
 
 %build
 %configure2_5x \
