@@ -20,6 +20,9 @@ Patch106:	65-dfa-optional.patch
 Patch107:	66-match_icase.patch
 Patch108:	67-w.patch
 Patch110:	70-man_apostrophe.patch
+# git patches
+# http://git.savannah.gnu.org/gitweb/?p=grep.git;a=commit;h=189913f75b39f3136c825e317bceafe28618a94d
+Patch200:	grep-2.6.1-locale_fr.patch
 BuildRequires:	gettext
 BuildRequires:	pcre-devel
 BuildRequires:	texinfo
@@ -68,6 +71,7 @@ Install this package if you want info documentation on grep.
 #%patch107 -p0
 #%patch108 -p0
 %patch110 -p0
+%patch200 -p1
 
 %build
 %configure2_5x \
