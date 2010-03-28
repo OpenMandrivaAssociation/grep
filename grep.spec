@@ -3,7 +3,7 @@
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
 Version:	2.6.1
-Release:	%mkrel 2
+Release:	%mkrel 3
 License:	GPLv3
 Group:		Text tools
 URL:		http://www.gnu.org/software/grep/grep.html
@@ -23,6 +23,7 @@ Patch110:	70-man_apostrophe.patch
 # git patches
 # http://git.savannah.gnu.org/gitweb/?p=grep.git;a=commit;h=189913f75b39f3136c825e317bceafe28618a94d
 Patch200:	grep-2.6.1-locale_fr.patch
+Patch201:	grep-2.6.1-exclude.patch
 # Mandriva patches
 # (eugeni) skip multibyte check for nowas it is failing with grep 2.6.1 on buildsystem
 Patch301:	grep-2.6.1-skip_multibyte_check.patch
@@ -75,6 +76,7 @@ Install this package if you want info documentation on grep.
 #%patch108 -p0
 %patch110 -p0
 %patch200 -p1
+%patch201 -p1
 %patch301 -p1 -b .skip
 
 %build
