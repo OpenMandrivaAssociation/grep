@@ -73,8 +73,8 @@ Install this package if you want info documentation on grep.
 #%patch107 -p0
 #%patch108 -p0
 %patch110 -p0
-# we might need it on our build system
-#%patch301 -p1 -b .skip
+# (eugeni) our build system does not likes the multibyte test
+%patch301 -p1 -b .skip
 
 %build
 %configure2_5x \
