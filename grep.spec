@@ -2,7 +2,7 @@
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
-Version:	2.6.2
+Version:	2.6.3
 Release:	%mkrel 1
 License:	GPLv3
 Group:		Text tools
@@ -63,7 +63,7 @@ Install this package if you want info documentation on grep.
 
 #%patch8 -p0 -b .mbcset
 
-%patch100 -p0
+#%patch100 -p0
 #%patch101 -p0
 %patch103 -p1
 # eugeni: seems to be fixed upstream, but let's leave them for a couple of released to make sure
@@ -72,9 +72,9 @@ Install this package if you want info documentation on grep.
 #%patch106 -p0
 #%patch107 -p0
 #%patch108 -p0
-%patch110 -p0
+#%patch110 -p0
 # (eugeni) our build system does not likes the multibyte test
-%patch301 -p1 -b .skip
+#%patch301 -p1 -b .skip
 
 %build
 %configure2_5x \
