@@ -2,7 +2,7 @@
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
-Version:	2.6.3
+Version:	2.7
 Release:	%mkrel 1
 License:	GPLv3
 Group:		Text tools
@@ -79,8 +79,6 @@ Install this package if you want info documentation on grep.
 %build
 %configure2_5x \
     --without-included-regex \
-    --without-included-getopt \
-    --without-included-gettext \
     --enable-perl-regexp \
     --exec-prefix=/
 
