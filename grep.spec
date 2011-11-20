@@ -2,7 +2,7 @@
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
-Version:	2.9
+Version:	2.10
 Release:	%mkrel 1
 License:	GPLv3
 Group:		Text tools
