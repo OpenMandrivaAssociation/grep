@@ -26,7 +26,7 @@ Patch110:	70-man_apostrophe.patch
 Patch301:	grep-2.6.1-skip_multibyte_check.patch
 BuildRequires:	gettext
 BuildRequires:	pcre-devel
-BuildRequires:	texinfo
+#BuildRequires:	texinfo
 BuildRequires:	bison
 Buildroot:	%{_tmppath}/%{name}-%{version}-%{release}-buildroot
 
@@ -63,7 +63,7 @@ Install this package if you want info documentation on grep.
 
 #%patch100 -p0
 #%patch101 -p0
-%patch103 -p0
+#%patch103 -p0
 # eugeni: seems to be fixed upstream, but let's leave them for a couple of released to make sure
 #%patch104 -p0
 #%patch105 -p0
@@ -78,7 +78,9 @@ Install this package if you want info documentation on grep.
 %configure2_5x \
     --without-included-regex \
     --enable-perl-regexp \
-    --exec-prefix=/
+    --exec-prefix=/ \
+    --disable-rpath \
+    --enable-threads=posix
 
 %make
 
@@ -90,7 +92,6 @@ rm -rf %{buildroot}
 
 %makeinstall_std
 
-%find_lang %{name}
 
 %post doc
 %_install_info %{name}.info
@@ -101,7 +102,7 @@ rm -rf %{buildroot}
 %clean
 rm -rf %{buildroot}
 
-%files -f %{name}.lang
+%files
 %defattr(-,root,root)
 %{_bindir}/*
 %{_mandir}/*/*
