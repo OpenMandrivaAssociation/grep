@@ -3,32 +3,16 @@
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
 Version:	2.10
-Release:	%mkrel 1
+Release:	2
 License:	GPLv3
 Group:		Text tools
 URL:		http://www.gnu.org/software/grep/grep.html
 Source0:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.xz
 Source1:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.xz.sig
-# patches from debian
-Patch100:	2-man_rgrep.patch
-Patch101:	55-bigfile.patch
-Patch103:	61-dfa.c-case_fold-charclass.patch
-Patch104:	63-dfa.c-case_fold-range.patch
-Patch105:	64-egf-speedup.patch
-Patch106:	65-dfa-optional.patch
-Patch107:	66-match_icase.patch
-Patch108:	67-w.patch
-Patch110:	70-man_apostrophe.patch
-# git patches
-# (none)
-# Mandriva patches
-# (eugeni) skip multibyte check for nowas it is failing with grep 2.6.1 on buildsystem
-Patch301:	grep-2.6.1-skip_multibyte_check.patch
 BuildRequires:	gettext
 BuildRequires:	pcre-devel
 #BuildRequires:	texinfo
 BuildRequires:	bison
-Buildroot:	%{_tmppath}/%{name}-%{version}-%{release}-buildroot
 
 %description
 The GNU versions of commonly used grep utilities.  Grep searches one or
@@ -60,20 +44,6 @@ Install this package if you want info documentation on grep.
 
 %setup -q
 
-
-#%patch100 -p0
-#%patch101 -p0
-#%patch103 -p0
-# eugeni: seems to be fixed upstream, but let's leave them for a couple of released to make sure
-#%patch104 -p0
-#%patch105 -p0
-#%patch106 -p0
-#%patch107 -p0
-#%patch108 -p0
-#%patch110 -p0
-# (eugeni) our build system does not likes the multibyte test
-#%patch301 -p1 -b .skip
-
 %build
 %configure2_5x \
     --without-included-regex \
@@ -99,15 +69,10 @@ rm -rf %{buildroot}
 %preun doc
 %_remove_install_info %{name}.info
 
-%clean
-rm -rf %{buildroot}
-
 %files
-%defattr(-,root,root)
 %{_bindir}/*
 %{_mandir}/*/*
 
 %files doc
-%defattr(-,root,root)
 %doc AUTHORS THANKS TODO NEWS README ChangeLog
 %{_infodir}/*.info*
