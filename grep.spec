@@ -62,6 +62,7 @@ rm -rf %{buildroot}
 
 %makeinstall_std
 
+%find_lang %{name}
 
 %post doc
 %_install_info %{name}.info
@@ -69,7 +70,7 @@ rm -rf %{buildroot}
 %preun doc
 %_remove_install_info %{name}.info
 
-%files
+%files -f %{name}.lang
 %{_bindir}/*
 %{_mandir}/*/*
 
