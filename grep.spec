@@ -2,8 +2,8 @@
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
-Version:	2.10
-Release:	2
+Version:	2.11
+Release:	1
 License:	GPLv3
 Group:		Text tools
 URL:		http://www.gnu.org/software/grep/grep.html
