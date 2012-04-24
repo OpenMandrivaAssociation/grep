@@ -2,7 +2,7 @@
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
-Version:	2.11
+Version:	2.12
 Release:	1
 License:	GPLv3
 Group:		Text tools
@@ -26,8 +26,6 @@ for searching through text files, for system administration tasks, etc.
 %package doc
 Summary:	Grep documentation in info format
 Group:		Books/Computer books
-Requires(post):	info-install
-Requires(preun):	info-install
 
 %description doc
 The GNU versions of commonly used grep utilities.  Grep searches one or
@@ -63,12 +61,6 @@ rm -rf %{buildroot}
 %makeinstall_std
 
 %find_lang %{name}
-
-%post doc
-%_install_info %{name}.info
-
-%preun doc
-%_remove_install_info %{name}.info
 
 %files -f %{name}.lang
 %{_bindir}/*
