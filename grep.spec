@@ -3,7 +3,7 @@
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
 Version:	2.14
-Release:	1
+Release:	2
 License:	GPLv3
 Group:		Text tools
 URL:		http://www.gnu.org/software/grep/grep.html
@@ -11,8 +11,9 @@ Source0:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.xz
 Source1:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.xz.sig
 BuildRequires:	gettext
 BuildRequires:	pcre-devel
-#BuildRequires:	texinfo
+BuildRequires:	texinfo
 BuildRequires:	bison
+Provides: /bin/grep
 
 %description
 The GNU versions of commonly used grep utilities.  Grep searches one or
