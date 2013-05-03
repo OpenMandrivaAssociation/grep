@@ -6,14 +6,15 @@ Version:	2.14
 Release:	2
 License:	GPLv3
 Group:		Text tools
-URL:		http://www.gnu.org/software/grep/grep.html
+Url:		http://www.gnu.org/software/grep/grep.html
 Source0:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.xz
 Source1:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.xz.sig
-BuildRequires:	gettext
-BuildRequires:	pcre-devel
-BuildRequires:	texinfo
+
 BuildRequires:	bison
-Provides: /bin/grep
+BuildRequires:	gettext
+BuildRequires:	texinfo
+BuildRequires:	pkgconfig(libpcre)
+Provides:	/bin/grep
 
 %description
 The GNU versions of commonly used grep utilities.  Grep searches one or
@@ -40,16 +41,14 @@ for searching through text files, for system administration tasks, etc.
 Install this package if you want info documentation on grep.
 
 %prep
-
 %setup -q
 
 %build
 %configure2_5x \
-    --without-included-regex \
-    --enable-perl-regexp \
-    --exec-prefix=/ \
-    --disable-rpath \
-    --enable-threads=posix
+	--without-included-regex \
+	--enable-perl-regexp \
+	--exec-prefix=/ \
+	--enable-threads=posix
 
 %make
 
@@ -57,8 +56,6 @@ Install this package if you want info documentation on grep.
 make check
 
 %install
-rm -rf %{buildroot}
-
 %makeinstall_std
 
 %find_lang %{name}
@@ -70,3 +67,4 @@ rm -rf %{buildroot}
 %files doc
 %doc AUTHORS THANKS TODO NEWS README ChangeLog
 %{_infodir}/*.info*
+
