@@ -1,6 +1,2 @@
-removed_sources:
-  grep-2.14.tar.xz: fb6ea404a0ef915334ca6212c7b517432ffe193e
 sources:
-  grep-2.14.tar.xz.sig: e4760d2207823b85e81ff0dbcf0482722b762f4e
-  grep-2.15.tar.xz: 1dffd7a82761166cc4d39727944655233c2d95fd
-  grep-2.15.tar.xz.sig: 54b8d88414bf271b22d320ff59dff7cb5998ccab
+  grep-2.16.tar.xz: 4ab9c1f8a5934734d3e01dc32ee1a8ae0f974359
