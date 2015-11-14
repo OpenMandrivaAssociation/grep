@@ -53,8 +53,10 @@ export ac_cv_search_pcre_compile="$(pkg-config --libs --static libpcre)"
 
 %make CFLAGS="%{optflags}"
 
+%ifnarch %{ix86}
 %check
 make check
+%endif
 
 %install
 %makeinstall_std
