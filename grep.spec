@@ -8,7 +8,6 @@ License:	GPLv3
 Group:		Text tools
 Url:		http://www.gnu.org/software/grep/grep.html
 Source0:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.xz
-
 BuildRequires:	bison
 BuildRequires:	gettext
 BuildRequires:	texinfo
