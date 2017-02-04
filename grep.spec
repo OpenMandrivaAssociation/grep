@@ -2,8 +2,8 @@
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
-Version:	2.25
-Release:	0.1
+Version:	2.27
+Release:	1
 License:	GPLv3
 Group:		Text tools
 Url:		http://www.gnu.org/software/grep/grep.html
@@ -42,16 +42,20 @@ Install this package if you want info documentation on grep.
 %setup -q
 
 %build
-%configure2_5x \
+# Always use pkg-config to get lib info for pcre.
+export ac_cv_search_pcre_compile="$(pkg-config --libs --static libpcre)"
+%configure \
 	--without-included-regex \
 	--enable-perl-regexp \
 	--exec-prefix=/ \
 	--enable-threads=posix
 
-%make
+%make CFLAGS="%{optflags}"
 
+%ifnarch %{ix86}
 %check
 make check
+%endif
 
 %install
 %makeinstall_std
