@@ -2,13 +2,12 @@
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
-Version:	2.27
+Version:	2.28
 Release:	1
 License:	GPLv3
 Group:		Text tools
 Url:		http://www.gnu.org/software/grep/grep.html
 Source0:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.xz
-
 BuildRequires:	bison
 BuildRequires:	gettext
 BuildRequires:	texinfo
@@ -68,5 +67,5 @@ make check
 %{_mandir}/*/*
 
 %files doc
-%doc AUTHORS THANKS TODO NEWS README ChangeLog
+%doc AUTHORS THANKS TODO NEWS README
 %{_infodir}/*.info*
