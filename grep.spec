@@ -1,4 +1,5 @@
 %define _bindir /bin
+%define _disable_lto 1
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
