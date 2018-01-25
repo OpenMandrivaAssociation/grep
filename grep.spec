@@ -1,5 +1,7 @@
 %define _bindir /bin
-%define _disable_lto 1
+
+# (tpg) optimize it a bit
+%global optflags %{optflags} -O3 --rtlib=compiler-rt
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
