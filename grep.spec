@@ -1,5 +1,8 @@
 %define _bindir /bin
 
+# (tpg) optimize it a bit
+%global optflags %{optflags} -O3 --rtlib=compiler-rt
+
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
 Version:	3.1
@@ -8,6 +11,8 @@ License:	GPLv3
 Group:		Text tools
 Url:		http://www.gnu.org/software/grep/grep.html
 Source0:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.xz
+# (tpg) fix build with LLVM/clang
+Patch0:		grep-3.1-check-for-__builtin_mul_overflow_p.patch
 BuildRequires:	bison
 BuildRequires:	gettext
 BuildRequires:	texinfo
@@ -40,6 +45,7 @@ Install this package if you want info documentation on grep.
 
 %prep
 %setup -q
+%apply_patches
 
 %build
 # Always use pkg-config to get lib info for pcre.
