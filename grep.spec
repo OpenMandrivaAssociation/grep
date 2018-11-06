@@ -6,7 +6,7 @@
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
 Version:	3.1
-Release:	2
+Release:	3
 License:	GPLv3
 Group:		Text tools
 Url:		http://www.gnu.org/software/grep/grep.html
@@ -60,7 +60,7 @@ export ac_cv_search_pcre_compile="$(pkg-config --libs --static libpcre)"
 
 %ifnarch %{ix86}
 %check
-make check || cat tests/test-suite.log
+make check || cat tests/test-suite.log && exit 1
 %endif
 
 %install
