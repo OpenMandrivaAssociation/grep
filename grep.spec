@@ -13,6 +13,7 @@ Url:		http://www.gnu.org/software/grep/grep.html
 Source0:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.xz
 # (tpg) fix build with LLVM/clang
 Patch0:		grep-3.1-check-for-__builtin_mul_overflow_p.patch
+Patch0:		grep-3.1-glibc-2.28-fix.patch
 BuildRequires:	bison
 BuildRequires:	gettext
 BuildRequires:	texinfo
@@ -44,8 +45,7 @@ for searching through text files, for system administration tasks, etc.
 Install this package if you want info documentation on grep.
 
 %prep
-%setup -q
-%apply_patches
+%autosetup -p1
 
 %build
 # Always use pkg-config to get lib info for pcre.
@@ -56,7 +56,7 @@ export ac_cv_search_pcre_compile="$(pkg-config --libs --static libpcre)"
 	--exec-prefix=/ \
 	--enable-threads=posix
 
-%make CFLAGS="%{optflags}"
+%make_build CFLAGS="%{optflags}"
 
 %ifnarch %{ix86}
 %check
@@ -64,7 +64,7 @@ make check || cat tests/test-suite.log && exit 1
 %endif
 
 %install
-%makeinstall_std
+%make_install
 
 %find_lang %{name}
 
