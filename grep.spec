@@ -60,7 +60,7 @@ export ac_cv_search_pcre_compile="$(pkg-config --libs --static libpcre)"
 
 %ifnarch %{ix86}
 %check
-make check || cat tests/test-suite.log && exit 1
+make check
 %endif
 
 %install
