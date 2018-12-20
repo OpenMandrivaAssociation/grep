@@ -28,7 +28,7 @@ diff -Naur grep-3.2/gnulib-tests/macros.h grep-3.2.tpg/gnulib-tests/macros.h
  
  #ifndef FALLTHROUGH
 -# if __GNUC__ < 7
-+# if __GNUC__ < 7 || !__has_attribute(__fallthrough__) 
++# if __GNUC__ < 7 || !__has_attribute(__fallthrough__)
  #  define FALLTHROUGH ((void) 0)
  # else
  #  define FALLTHROUGH __attribute__ ((__fallthrough__))
@@ -40,7 +40,7 @@ diff -Naur grep-3.2/gnulib-tests/vasnprintf.c grep-3.2.tpg/gnulib-tests/vasnprin
  
  #ifndef FALLTHROUGH
 -# if __GNUC__ < 7
-+# if __GNUC__ < 7 || !__has_attribute(__fallthrough__
++# if __GNUC__ < 7 || !__has_attribute(__fallthrough__)
  #  define FALLTHROUGH ((void) 0)
  # else
  #  define FALLTHROUGH __attribute__ ((__fallthrough__))
