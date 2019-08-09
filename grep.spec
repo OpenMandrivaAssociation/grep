@@ -1,7 +1,8 @@
 %define _bindir /bin
-
+%ifnarch %{riscv}
 # (tpg) optimize it a bit
 %global optflags %{optflags} -O3 --rtlib=compiler-rt
+%endif
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
