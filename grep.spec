@@ -1,7 +1,7 @@
 %define _bindir /bin
 %ifnarch %{riscv}
 # (tpg) optimize it a bit
-%global optflags %{optflags} -O3 --rtlib=compiler-rt
+#global optflags %{optflags} -O3 --rtlib=compiler-rt
 %endif
 
 Summary:	The GNU versions of grep pattern matching utilities
@@ -13,7 +13,7 @@ Group:		Text tools
 Url:		http://www.gnu.org/software/grep/grep.html
 Source0:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.xz
 # (tpg) fix build with LLVM/clang
-Patch0:		grep-3.1-check-for-__builtin_mul_overflow_p.patch
+#Patch0:		grep-3.1-check-for-__builtin_mul_overflow_p.patch
 BuildRequires:	bison
 BuildRequires:	gettext
 BuildRequires:	texinfo
