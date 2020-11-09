@@ -6,7 +6,7 @@
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
-Version:	3.5
+Version:	3.6
 Release:	1
 License:	GPLv3
 Group:		Text tools
