@@ -1,0 +1,24 @@
+diff -up grep-3.8/lib/stdlib.in.h.omv~ grep-3.8/lib/stdlib.in.h
+--- grep-3.8/lib/stdlib.in.h.omv~	2022-09-04 00:04:13.265069223 +0200
++++ grep-3.8/lib/stdlib.in.h	2022-09-04 00:04:32.254763770 +0200
+@@ -103,7 +103,7 @@ struct random_data
+    that can be freed by passing them as the Ith argument to the
+    function F.  */
+ #ifndef _GL_ATTRIBUTE_DEALLOC
+-# if __GNUC__ >= 11
++# if __GNUC__ >= 11 && !defined(__clang__)
+ #  define _GL_ATTRIBUTE_DEALLOC(f, i) __attribute__ ((__malloc__ (f, i)))
+ # else
+ #  define _GL_ATTRIBUTE_DEALLOC(f, i)
+diff -up grep-3.8/m4/gnulib-common.m4.omv~ grep-3.8/m4/gnulib-common.m4
+--- grep-3.8/m4/gnulib-common.m4.omv~	2022-09-04 00:05:46.788564943 +0200
++++ grep-3.8/m4/gnulib-common.m4	2022-09-04 00:06:03.761291961 +0200
+@@ -182,7 +182,7 @@ AC_DEFUN([gl_COMMON_BODY], [
+    _GL_ATTRIBUTE_DEALLOC_FREE declares that the function returns pointers that
+    can be freed via 'free'; it can be used only after declaring 'free'.  */
+ /* Applies to: functions.  Cannot be used on inline functions.  */
+-#if _GL_GNUC_PREREQ (11, 0)
++#if _GL_GNUC_PREREQ (11, 0) && !defined(__clang__)
+ # define _GL_ATTRIBUTE_DEALLOC(f, i) __attribute__ ((__malloc__ (f, i)))
+ #else
+ # define _GL_ATTRIBUTE_DEALLOC(f, i)
