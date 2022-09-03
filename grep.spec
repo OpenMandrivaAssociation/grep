@@ -15,7 +15,7 @@ Patch0:		grep-gnulib-clang.patch
 BuildRequires:	bison
 BuildRequires:	gettext
 BuildRequires:	texinfo
-BuildRequires:	pkgconfig(libpcre)
+BuildRequires:	pkgconfig(libpcre2-8)
 Provides:	/bin/grep
 
 %description
