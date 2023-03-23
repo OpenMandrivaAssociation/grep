@@ -1,11 +1,11 @@
 %ifnarch %{riscv}
 # (tpg) optimize it a bit
-%global optflags %{optflags} -O3 --rtlib=compiler-rt
+%global optflags %{optflags} -Oz --rtlib=compiler-rt
 %endif
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
-Version:	3.9
+Version:	3.10
 Release:	1
 License:	GPLv3
 Group:		Text tools
@@ -47,7 +47,7 @@ Install this package if you want info documentation on grep.
 
 %build
 # Always use pkg-config to get lib info for pcre.
-export ac_cv_search_pcre_compile="$(pkg-config --libs --static libpcre)"
+export ac_cv_search_pcre_compile="$(pkg-config --libs --static libpcre2-8)"
 %configure \
 	--without-included-regex \
 	--enable-perl-regexp \
