@@ -9,7 +9,7 @@ Version:	3.11
 Release:	1
 License:	GPLv3
 Group:		Text tools
-Url:		http://www.gnu.org/software/grep/grep.html
+Url:		https://www.gnu.org/software/grep/grep.html
 Source0:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.xz
 Patch0:		grep-gnulib-clang.patch
 BuildRequires:	bison
