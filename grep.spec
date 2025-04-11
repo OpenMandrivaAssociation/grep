@@ -5,13 +5,12 @@
 
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
-Version:	3.11
+Version:	3.12
 Release:	1
 License:	GPLv3
 Group:		Text tools
 Url:		https://www.gnu.org/software/grep/grep.html
 Source0:	ftp://ftp.gnu.org/pub/gnu/grep/%{name}-%{version}.tar.xz
-Patch0:		grep-gnulib-clang.patch
 BuildRequires:	bison
 BuildRequires:	gettext
 BuildRequires:	texinfo
