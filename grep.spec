@@ -3,7 +3,7 @@
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
 Version:	3.12.35
-Release:	1
+Release:	2
 License:	GPLv3
 Group:		Text tools
 Url:		https://www.gnu.org/software/grep/grep.html
@@ -37,6 +37,7 @@ Provides:	/bin/grep
 0005-perf-aarch64-NEON-memmem-in-perf.c.patch
 0006-perf-LoongArch-LSX-and-RISC-V-Vector-memmem-in-perf..patch
 0007-rg-add-ripgrep-compatible-recursive-grep-C-23.patch
+0008-fix-SIGBUS-in-perf_try_mmap-on-page-aligned-files.patch
 
 %description
 The GNU versions of commonly used grep utilities.  Grep searches one or

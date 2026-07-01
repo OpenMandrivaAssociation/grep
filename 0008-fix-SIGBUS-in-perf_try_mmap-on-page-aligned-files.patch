@@ -1,0 +1,97 @@
+From cb52a076fe44bdd832f4f4203da33b49c7714393 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bernhard=20Rosenkr=C3=A4nzer?= <bero@lindev.ch>
+Date: Wed, 1 Jul 2026 19:58:31 +0200
+Subject: [PATCH 8/8] fix: SIGBUS in perf_try_mmap on page-aligned files
+
+When a file's size is an exact multiple of the page size (4096, 8192,
+etc.), mmap(size+1) maps the file's pages but the +1 sentinel byte
+lands on a page with no file backing.  Writing to that offset causes
+SIGBUS because MAP_PRIVATE still requires file backing for the fault.
+
+Fix: round the mmap size up to the next page boundary instead of just
+adding 1.  With MAP_PRIVATE, the kernel zero-fills beyond EOF within
+the last mapped page, so the sentinel write is always safe.
+
+Also fix the same pattern in rg.cpp's fallback mmap path, and adjust
+munmap sizes in both grep.c and rg.cpp to unmap the full page-rounded
+region.
+
+Reported via core dump: rg -l nv_khronos_goal ~/.grok
+---
+ src/grep.c |  6 +++++-
+ src/perf.c | 13 ++++++++++---
+ src/rg.cpp |  9 +++++++--
+ 3 files changed, 22 insertions(+), 6 deletions(-)
+
+diff --git a/src/grep.c b/src/grep.c
+index ce1cc1e..95a5341 100644
+--- a/src/grep.c
++++ b/src/grep.c
+@@ -931,7 +931,11 @@ reset (int fd, struct stat const *st)
+ {
+   if (using_mmap && mmap_base)
+     {
+-      munmap (mmap_base, mmap_len);
++      /* mmap_len is the file content length; the actual mapped region
++         was rounded up to the next page for the sentinel byte.  */
++      long pg = sysconf (_SC_PAGESIZE);
++      size_t real_map = (mmap_len + (size_t) pg) & ~((size_t) pg - 1);
++      munmap (mmap_base, real_map);
+       mmap_base = nullptr;
+       mmap_len = 0;
+       using_mmap = false;
+diff --git a/src/perf.c b/src/perf.c
+index f380292..94867e1 100644
+--- a/src/perf.c
++++ b/src/perf.c
+@@ -152,10 +152,17 @@ perf_try_mmap (int fd, off_t size, size_t *map_len)
+   if (size < GREP_MMAP_MIN || (uintmax_t) size > SIZE_MAX - 1)
+     return nullptr;
+ 
+-  /* Map size+1 with PROT_WRITE: GNU DFA temporarily stores EOL at buffer end
+-     (*end = eol in dfaexec_main).  MAP_PRIVATE CoW keeps the file read-only on disk.  */
++  /* Map enough for the file plus one sentinel byte (DFA writes EOL at
++     buffer end via *end = eol in dfaexec_main).  MAP_PRIVATE CoW keeps
++     the file read-only on disk.
++
++     Critical: when file_len is page-aligned, the +1 byte would land on
++     a page with no file backing and the kernel delivers SIGBUS.  Round
++     up to the next page so the sentinel always falls on a valid (zero-
++     filled beyond EOF) MAP_PRIVATE page.  */
+   size_t file_len = (size_t) size;
+-  size_t map_sz = file_len + 1;
++  long page = sysconf (_SC_PAGESIZE);
++  size_t map_sz = (file_len + page) & ~((size_t) page - 1);
+   int flags = MAP_PRIVATE;
+ #ifdef MAP_POPULATE
+   flags |= MAP_POPULATE;
+diff --git a/src/rg.cpp b/src/rg.cpp
+index a28b513..fe511a4 100644
+--- a/src/rg.cpp
++++ b/src/rg.cpp
+@@ -6643,7 +6643,11 @@ search_file_ex (const std::string &path, off_t known_size,
+       size_t unmap_len = mlen;
+       if (!map)
+         {
+-          size_t map_sz = static_cast<size_t> (st.st_size) + 1;
++          /* Round up to next page so the sentinel byte never falls on
++             an unbacked page (SIGBUS when file_len is page-aligned).  */
++          long pg = sysconf (_SC_PAGESIZE);
++          size_t map_sz = (static_cast<size_t> (st.st_size) + pg)
++                          & ~(static_cast<size_t> (pg) - 1);
+           map = mmap (nullptr, map_sz, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+           if (map != MAP_FAILED)
+             {
+@@ -6659,7 +6663,8 @@ search_file_ex (const std::string &path, off_t known_size,
+         }
+       else
+         {
+-          unmap_len = mlen + 1;
++          long pg2 = sysconf (_SC_PAGESIZE);
++          unmap_len = (mlen + pg2) & ~(static_cast<size_t> (pg2) - 1);
+ #ifdef MADV_SEQUENTIAL
+           madvise (map, mlen, MADV_SEQUENTIAL);
+ #endif
+-- 
+2.53.0
+
