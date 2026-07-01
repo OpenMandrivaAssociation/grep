@@ -1,0 +1,226 @@
+From 023ebe187e0fd34dd8d41b9290c126511a4882ff Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bernhard=20Rosenkr=C3=A4nzer?= <bero@lindev.ch>
+Date: Mon, 29 Jun 2026 19:54:55 +0200
+Subject: [PATCH 6/7] perf: LoongArch LSX and RISC-V Vector memmem in perf.c
+
+Add SIMD memmem implementations for two more architectures:
+
+LoongArch LSX (128-bit SIMD):
+- 4x unrolled 64-byte/iteration two-byte pair scan using
+  __lsx_vld / __lsx_vseq_b / __lsx_vand_v / __lsx_vpickve2gr_du.
+- Same algorithmic structure as AVX2 and NEON paths.
+- Guarded by __loongarch_sx preprocessor check.
+
+RISC-V Vector (RVV):
+- Strip-mined two-byte pair scan using e8m4 grouping.
+- Uses __riscv_vle8_v / __riscv_vmseq_vx / __riscv_vmand_mm /
+  __riscv_vcpop_m for candidate extraction.
+- Adapts to hardware vector length (VLEN) automatically.
+- Guarded by __riscv_v preprocessor check.
+
+Dispatch order: x86_64 AVX2 > aarch64 NEON > LoongArch LSX >
+RISC-V RVV > glibc memmem fallback.
+---
+ src/perf.c | 186 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 186 insertions(+)
+
+diff --git a/src/perf.c b/src/perf.c
+index 9cd3291..f380292 100644
+--- a/src/perf.c
++++ b/src/perf.c
+@@ -452,6 +452,192 @@ perf_memmem_neon (const char *hay, size_t hlen,
+ #endif /* aarch64 */
+ 
+ 
++#if defined(__loongarch64) || defined(__loongarch__)
++# if defined(__loongarch_sx)
++#  include <lsxintrin.h>
++
++/* LSX movemask: collapse 16-byte comparison to 16-bit bitmask.  */
++static inline unsigned
++perf_lsx_movemask (__m128i cmp)
++{
++  __m128i m = __lsx_vmsknz_b (cmp);
++  return (unsigned) __lsx_vpickve2gr_wu (m, 0) & 0xFFFFu;
++}
++
++static const char *
++perf_memmem_lsx (const char *hay, size_t hlen,
++                 const char *ndl, size_t nlen)
++{
++  if (nlen == 0)
++    return hay;
++  if (nlen > hlen)
++    return NULL;
++  unsigned char first = (unsigned char) ndl[0];
++  const char *end = hay + hlen - nlen + 1;
++  const char *p = hay;
++
++  if (nlen >= 2)
++    {
++      unsigned char second = (unsigned char) ndl[1];
++      __m128i v0 = __lsx_vreplgr2vr_b ((char) first);
++      __m128i v1 = __lsx_vreplgr2vr_b ((char) second);
++
++      /* 4x unrolled: 64 bytes per iteration.  */
++      while (p + 65 <= end + nlen - 1)
++        {
++          __m128i a0 = __lsx_vld ((const void *) p, 0);
++          __m128i a1 = __lsx_vld ((const void *) (p + 1), 0);
++          __m128i c0 = __lsx_vld ((const void *) (p + 16), 0);
++          __m128i c1 = __lsx_vld ((const void *) (p + 17), 0);
++          __m128i e0 = __lsx_vld ((const void *) (p + 32), 0);
++          __m128i e1 = __lsx_vld ((const void *) (p + 33), 0);
++          __m128i g0 = __lsx_vld ((const void *) (p + 48), 0);
++          __m128i g1 = __lsx_vld ((const void *) (p + 49), 0);
++
++          unsigned m0 = perf_lsx_movemask (
++              __lsx_vand_v (__lsx_vseq_b (a0, v0), __lsx_vseq_b (a1, v1)));
++          unsigned m1 = perf_lsx_movemask (
++              __lsx_vand_v (__lsx_vseq_b (c0, v0), __lsx_vseq_b (c1, v1)));
++          unsigned m2 = perf_lsx_movemask (
++              __lsx_vand_v (__lsx_vseq_b (e0, v0), __lsx_vseq_b (e1, v1)));
++          unsigned m3 = perf_lsx_movemask (
++              __lsx_vand_v (__lsx_vseq_b (g0, v0), __lsx_vseq_b (g1, v1)));
++
++          if (__builtin_expect (m0 | m1 | m2 | m3, 0))
++            {
++              while (m0)
++                {
++                  int idx = __builtin_ctz (m0);
++                  const char *q = p + idx;
++                  if (q < end && memcmp (q, ndl, nlen) == 0)
++                    return q;
++                  m0 &= m0 - 1;
++                }
++              while (m1)
++                {
++                  int idx = __builtin_ctz (m1);
++                  const char *q = p + 16 + idx;
++                  if (q < end && memcmp (q, ndl, nlen) == 0)
++                    return q;
++                  m1 &= m1 - 1;
++                }
++              while (m2)
++                {
++                  int idx = __builtin_ctz (m2);
++                  const char *q = p + 32 + idx;
++                  if (q < end && memcmp (q, ndl, nlen) == 0)
++                    return q;
++                  m2 &= m2 - 1;
++                }
++              while (m3)
++                {
++                  int idx = __builtin_ctz (m3);
++                  const char *q = p + 48 + idx;
++                  if (q < end && memcmp (q, ndl, nlen) == 0)
++                    return q;
++                  m3 &= m3 - 1;
++                }
++            }
++          p += 64;
++        }
++
++      /* Single 16-byte blocks.  */
++      while (p + 17 <= end + nlen - 1)
++        {
++          __m128i b0 = __lsx_vld ((const void *) p, 0);
++          __m128i b1 = __lsx_vld ((const void *) (p + 1), 0);
++          unsigned m = perf_lsx_movemask (
++              __lsx_vand_v (__lsx_vseq_b (b0, v0), __lsx_vseq_b (b1, v1)));
++          while (m)
++            {
++              int idx = __builtin_ctz (m);
++              const char *q = p + idx;
++              if (q < end && memcmp (q, ndl, nlen) == 0)
++                return q;
++              m &= m - 1;
++            }
++          p += 16;
++        }
++    }
++
++  /* Scalar tail.  */
++  while (p < end)
++    {
++      const char *q = memchr (p, first, (size_t) (end - p));
++      if (!q)
++        return NULL;
++      if (memcmp (q, ndl, nlen) == 0)
++        return q;
++      p = q + 1;
++    }
++  return NULL;
++}
++# endif /* __loongarch_sx */
++#endif /* loongarch */
++
++#if defined(__riscv) && (__riscv_xlen == 64)
++# if defined(__riscv_v) || defined(__riscv_vector)
++#  include <riscv_vector.h>
++
++static const char *
++perf_memmem_rvv (const char *hay, size_t hlen,
++                 const char *ndl, size_t nlen)
++{
++  if (nlen == 0)
++    return hay;
++  if (nlen > hlen)
++    return NULL;
++  unsigned char first = (unsigned char) ndl[0];
++  const char *end = hay + hlen - nlen + 1;
++  const char *p = hay;
++
++  if (nlen >= 2)
++    {
++      unsigned char second = (unsigned char) ndl[1];
++      while (p < end)
++        {
++          size_t avail = (size_t) (end - p);
++          size_t vl = __riscv_vsetvl_e8m4 (avail);
++          if (vl == 0)
++            break;
++          /* Need at least 1 byte after for second-byte compare.  */
++          if (p + vl + 1 > hay + hlen)
++            vl = (size_t) (hay + hlen - p - 1);
++          if (vl == 0)
++            break;
++          vuint8m4_t v0 = __riscv_vle8_v_u8m4 ((const uint8_t *) p, vl);
++          vuint8m4_t v1 = __riscv_vle8_v_u8m4 ((const uint8_t *) (p + 1), vl);
++          vbool2_t m0 = __riscv_vmseq_vx_u8m4_b2 (v0, first, vl);
++          vbool2_t m1 = __riscv_vmseq_vx_u8m4_b2 (v1, second, vl);
++          vbool2_t both = __riscv_vmand_mm_b2 (m0, m1, vl);
++          long idx = __riscv_vfirst_m_b2 (both, vl);
++          if (idx < 0)
++            {
++              p += vl;
++              continue;
++            }
++          const char *q = p + idx;
++          if (memcmp (q, ndl, nlen) == 0)
++            return q;
++          p = q + 1;
++        }
++    }
++
++  /* Scalar tail / single-byte needle.  */
++  while (p < end)
++    {
++      const char *q = memchr (p, first, (size_t) (end - p));
++      if (!q)
++        return NULL;
++      if (memcmp (q, ndl, nlen) == 0)
++        return q;
++      p = q + 1;
++    }
++  return NULL;
++}
++# endif /* __riscv_v || __riscv_vector */
++#endif /* riscv64 */
++
+ const char *
+ perf_memmem (const char *hay, size_t hlen,
+              const char *ndl, size_t nlen)
+-- 
+2.53.0
+

@@ -1,0 +1,168 @@
+From 8d04a65afffc3e3063c66d3178547aa20cbdd00c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bernhard=20Rosenkr=C3=A4nzer?= <bero@lindev.ch>
+Date: Mon, 29 Jun 2026 19:54:41 +0200
+Subject: [PATCH 5/7] perf: aarch64 NEON memmem in perf.c
+
+Add a NEON implementation of perf_memmem for aarch64:
+
+- 4x unrolled 64-byte/iteration two-byte pair scan using
+  vld1q_u8 / vceqq_u8 / vandq_u8 / vmaxvq_u8.
+- Candidates verified with memcmp, same structure as AVX2.
+- Dispatch: __aarch64__ selects NEON, x86_64 selects AVX2,
+  others fall back to glibc memmem.
+
+No functional change on x86_64; NEON code is compiled only on aarch64.
+---
+ src/perf.c | 136 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 136 insertions(+)
+
+diff --git a/src/perf.c b/src/perf.c
+index 0e05e2c..9cd3291 100644
+--- a/src/perf.c
++++ b/src/perf.c
+@@ -316,6 +316,142 @@ perf_memmem_avx2 (const char *hay, size_t hlen,
+ }
+ #endif /* x86_64 */
+ 
++#if defined(__aarch64__) || defined(_M_ARM64)
++# include <arm_neon.h>
++
++/* NEON helper: extract a per-byte bitmask from a comparison result.
++   Returns a 64-bit value where every 4 bits correspond to one of the
++   16 lanes; any nonzero nibble means that lane matched.  */
++static inline uint64_t
++neon_match_mask (uint8x16_t eq)
++{
++  /* Narrow 16 lanes to 8 by shifting high bits: each pair of bytes
++     becomes one byte, and matching bytes leave nonzero nibbles.  */
++  uint8x8_t narrow = vshrn_n_u16 (vreinterpretq_u16_u8 (eq), 4);
++  return vget_lane_u64 (vreinterpret_u64_u8 (narrow), 0);
++}
++
++/* Count trailing zero nibbles (= index of first matching byte).  */
++static inline int
++neon_ctz_nibble (uint64_t mask)
++{
++  return __builtin_ctzll (mask) >> 2;
++}
++
++static const char *
++perf_memmem_neon (const char *hay, size_t hlen,
++                  const char *ndl, size_t nlen)
++{
++  if (nlen == 0)
++    return hay;
++  if (nlen > hlen)
++    return nullptr;
++  unsigned char first = (unsigned char) ndl[0];
++  const char *end = hay + hlen - nlen + 1;
++  const char *p = hay;
++
++  if (nlen >= 2)
++    {
++      unsigned char second = (unsigned char) ndl[1];
++      uint8x16_t v0 = vdupq_n_u8 (first);
++      uint8x16_t v1 = vdupq_n_u8 (second);
++
++      /* 4x unrolled: process 64 bytes per iteration.  */
++      while (p + 65 <= end + nlen - 1)
++        {
++          uint8x16_t a0 = vld1q_u8 ((const uint8_t *) p);
++          uint8x16_t a1 = vld1q_u8 ((const uint8_t *) (p + 1));
++          uint8x16_t c0 = vld1q_u8 ((const uint8_t *) (p + 16));
++          uint8x16_t c1 = vld1q_u8 ((const uint8_t *) (p + 17));
++          uint8x16_t e0 = vld1q_u8 ((const uint8_t *) (p + 32));
++          uint8x16_t e1 = vld1q_u8 ((const uint8_t *) (p + 33));
++          uint8x16_t g0 = vld1q_u8 ((const uint8_t *) (p + 48));
++          uint8x16_t g1 = vld1q_u8 ((const uint8_t *) (p + 49));
++
++          uint64_t m0 = neon_match_mask (vandq_u8 (vceqq_u8 (a0, v0),
++                                                    vceqq_u8 (a1, v1)));
++          uint64_t m1 = neon_match_mask (vandq_u8 (vceqq_u8 (c0, v0),
++                                                    vceqq_u8 (c1, v1)));
++          uint64_t m2 = neon_match_mask (vandq_u8 (vceqq_u8 (e0, v0),
++                                                    vceqq_u8 (e1, v1)));
++          uint64_t m3 = neon_match_mask (vandq_u8 (vceqq_u8 (g0, v0),
++                                                    vceqq_u8 (g1, v1)));
++          if (__builtin_expect (m0 | m1 | m2 | m3, 0))
++            {
++              if (m0)
++                while (m0)
++                  {
++                    int idx = neon_ctz_nibble (m0);
++                    const char *q = p + idx;
++                    if (q < end && memcmp (q, ndl, nlen) == 0)
++                      return q;
++                    m0 &= ~((uint64_t) 0xF << (idx * 4));
++                  }
++              if (m1)
++                while (m1)
++                  {
++                    int idx = neon_ctz_nibble (m1);
++                    const char *q = p + 16 + idx;
++                    if (q < end && memcmp (q, ndl, nlen) == 0)
++                      return q;
++                    m1 &= ~((uint64_t) 0xF << (idx * 4));
++                  }
++              if (m2)
++                while (m2)
++                  {
++                    int idx = neon_ctz_nibble (m2);
++                    const char *q = p + 32 + idx;
++                    if (q < end && memcmp (q, ndl, nlen) == 0)
++                      return q;
++                    m2 &= ~((uint64_t) 0xF << (idx * 4));
++                  }
++              if (m3)
++                while (m3)
++                  {
++                    int idx = neon_ctz_nibble (m3);
++                    const char *q = p + 48 + idx;
++                    if (q < end && memcmp (q, ndl, nlen) == 0)
++                      return q;
++                    m3 &= ~((uint64_t) 0xF << (idx * 4));
++                  }
++            }
++          p += 64;
++        }
++
++      /* Handle remaining 16-byte blocks.  */
++      while (p + 17 <= end + nlen - 1)
++        {
++          uint8x16_t b0 = vld1q_u8 ((const uint8_t *) p);
++          uint8x16_t b1 = vld1q_u8 ((const uint8_t *) (p + 1));
++          uint64_t m = neon_match_mask (vandq_u8 (vceqq_u8 (b0, v0),
++                                                   vceqq_u8 (b1, v1)));
++          while (m)
++            {
++              int idx = neon_ctz_nibble (m);
++              const char *q = p + idx;
++              if (q < end && memcmp (q, ndl, nlen) == 0)
++                return q;
++              m &= ~((uint64_t) 0xF << (idx * 4));
++            }
++          p += 16;
++        }
++    }
++
++  /* Tail: byte-by-byte with memchr for first byte.  */
++  while (p < end)
++    {
++      const char *q = memchr (p, first, (size_t) (end - p));
++      if (!q)
++        return nullptr;
++      if (memcmp (q, ndl, nlen) == 0)
++        return q;
++      p = q + 1;
++    }
++  return nullptr;
++}
++#endif /* aarch64 */
++
++
+ const char *
+ perf_memmem (const char *hay, size_t hlen,
+              const char *ndl, size_t nlen)
+-- 
+2.53.0
+

@@ -1,0 +1,447 @@
+From cb0a5f5c11a8995a2f412d64a839270557c05a5c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bernhard=20Rosenkr=C3=A4nzer?= <bero@lindev.ch>
+Date: Mon, 29 Jun 2026 19:53:22 +0200
+Subject: [PATCH 2/7] perf: add perf.c/perf.h performance helpers
+
+Add a new compilation unit with performance helpers inspired by
+ripgrep's techniques:
+
+- perf_buf_has_nulls / perf_all_zeros: word-at-a-time binary scans,
+  faster than strlen or byte-loop approaches on large buffers.
+- perf_count_newlines: word-at-a-time newline counting.
+- perf_is_ascii_pattern / perf_is_literal_pattern: fast pattern
+  classification for search strategy selection.
+- perf_try_mmap: mmap large regular files with MAP_PRIVATE |
+  MAP_POPULATE, faulting pages during mmap so the search loop
+  hits fewer major faults.
+- perf_memmem: SIMD-accelerated memmem with an AVX2 fast path
+  on x86_64.  Uses a 4x-unrolled 128-byte/iteration two-byte
+  pair scan, falling back to glibc memmem for short haystacks
+  or non-x86 architectures.
+- perf_advise_sequential: posix_fadvise POSIX_FADV_SEQUENTIAL hint.
+
+These are pure additions; no existing grep code is changed yet.
+---
+ src/perf.c | 354 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/perf.h |  48 ++++++++
+ 2 files changed, 402 insertions(+)
+ create mode 100644 src/perf.c
+ create mode 100644 src/perf.h
+
+diff --git a/src/perf.c b/src/perf.c
+new file mode 100644
+index 0000000..0e05e2c
+--- /dev/null
++++ b/src/perf.c
+@@ -0,0 +1,354 @@
++/* perf.c - performance helpers (SIMD-friendly word scans, mmap).  */
++
++#include <config.h>
++#include "perf.h"
++
++#include <limits.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <unistd.h>
++#include <stdlib.h>
++
++/* Word-at-a-time has_zero trick (Hacker's Delight / glibc memchr style).  */
++#if SIZE_MAX == UINT64_MAX
++typedef uint64_t perf_word_t;
++# define PERF_ONES  UINT64_C (0x0101010101010101)
++# define PERF_HIGH  UINT64_C (0x8080808080808080)
++#else
++typedef uint32_t perf_word_t;
++# define PERF_ONES  0x01010101u
++# define PERF_HIGH  0x80808080u
++#endif
++
++enum { PERF_WORD_SIZE = sizeof (perf_word_t) };
++
++static inline perf_word_t
++perf_has_zero (perf_word_t w)
++{
++  return (w - PERF_ONES) & ~w & PERF_HIGH;
++}
++
++static inline perf_word_t
++perf_has_byte (perf_word_t w, unsigned char c)
++{
++  perf_word_t x = w ^ (PERF_ONES * c);
++  return perf_has_zero (x);
++}
++
++bool
++perf_buf_has_nulls (char const *buf, size_t size)
++{
++  unsigned char const *p = (unsigned char const *) buf;
++  unsigned char const *end = p + size;
++
++  while (p < end && ((uintptr_t) p & (PERF_WORD_SIZE - 1)))
++    {
++      if (*p++ == 0)
++        return true;
++    }
++
++  while (p + PERF_WORD_SIZE <= end)
++    {
++      perf_word_t w;
++      memcpy (&w, p, PERF_WORD_SIZE);
++      if (perf_has_zero (w))
++        return true;
++      p += PERF_WORD_SIZE;
++    }
++
++  while (p < end)
++    if (*p++ == 0)
++      return true;
++  return false;
++}
++
++bool
++perf_all_zeros (char const *buf, size_t size)
++{
++  unsigned char const *p = (unsigned char const *) buf;
++  unsigned char const *end = p + size;
++
++  while (p < end && ((uintptr_t) p & (PERF_WORD_SIZE - 1)))
++    {
++      if (*p++)
++        return false;
++    }
++
++  while (p + PERF_WORD_SIZE <= end)
++    {
++      perf_word_t w;
++      memcpy (&w, p, PERF_WORD_SIZE);
++      if (w)
++        return false;
++      p += PERF_WORD_SIZE;
++    }
++
++  while (p < end)
++    if (*p++)
++      return false;
++  return true;
++}
++
++size_t
++perf_count_newlines (char const *buf, size_t size)
++{
++  unsigned char const *p = (unsigned char const *) buf;
++  unsigned char const *end = p + size;
++  size_t count = 0;
++
++  while (p < end && ((uintptr_t) p & (PERF_WORD_SIZE - 1)))
++    {
++      count += (*p++ == '\n');
++    }
++
++  while (p + PERF_WORD_SIZE <= end)
++    {
++      perf_word_t w;
++      memcpy (&w, p, PERF_WORD_SIZE);
++      perf_word_t m = perf_has_byte (w, '\n');
++      /* Count set high bits: each matching byte sets bit 7 of that lane.  */
++      while (m)
++        {
++          count++;
++          m &= m - 1;
++        }
++      p += PERF_WORD_SIZE;
++    }
++
++  while (p < end)
++    count += (*p++ == '\n');
++  return count;
++}
++
++bool
++perf_is_ascii_pattern (char const *pattern, size_t len)
++{
++  unsigned char const *p = (unsigned char const *) pattern;
++  for (size_t i = 0; i < len; i++)
++    if (p[i] & 0x80)
++      return false;
++  return true;
++}
++
++bool
++perf_is_literal_pattern (char const *pattern, size_t len)
++{
++  /* Metacharacters for basic/extended regex that prevent -F treatment.  */
++  static char const meta[] = ".^$*+?()[]{}|\\";
++  for (size_t i = 0; i < len; i++)
++    {
++      unsigned char c = (unsigned char) pattern[i];
++      if (c == '\n')
++        continue;
++      if (strchr (meta, c))
++        return false;
++    }
++  return true;
++}
++
++void *
++perf_try_mmap (int fd, off_t size, size_t *map_len)
++{
++  if (size < GREP_MMAP_MIN || (uintmax_t) size > SIZE_MAX - 1)
++    return nullptr;
++
++  /* Map size+1 with PROT_WRITE: GNU DFA temporarily stores EOL at buffer end
++     (*end = eol in dfaexec_main).  MAP_PRIVATE CoW keeps the file read-only on disk.  */
++  size_t file_len = (size_t) size;
++  size_t map_sz = file_len + 1;
++  int flags = MAP_PRIVATE;
++#ifdef MAP_POPULATE
++  flags |= MAP_POPULATE;
++#endif
++  int prot = PROT_READ | PROT_WRITE;
++  void *p = mmap (nullptr, map_sz, prot, flags, fd, 0);
++  if (p == MAP_FAILED)
++    {
++      /* Retry without POPULATE (older kernels / exotic mounts).  */
++      p = mmap (nullptr, map_sz, prot, MAP_PRIVATE, fd, 0);
++      if (p == MAP_FAILED)
++        return nullptr;
++    }
++  /* Extra byte for DFA sentinel; not part of file content.  */
++  ((char *) p)[file_len] = 0;
++
++#if defined MADV_SEQUENTIAL
++  madvise (p, file_len, MADV_SEQUENTIAL);
++#elif defined POSIX_MADV_SEQUENTIAL
++  posix_madvise (p, file_len, POSIX_MADV_SEQUENTIAL);
++#endif
++#if defined MADV_WILLNEED
++  madvise (p, file_len, MADV_WILLNEED);
++#endif
++#if defined MADV_HUGEPAGE
++  madvise (p, file_len, MADV_HUGEPAGE);
++#endif
++
++  *map_len = file_len;
++  return p;
++}
++
++/* --- SIMD-accelerated memmem (ported from rg_simd.cpp) --- */
++
++/* SIMD intrinsic casts trigger -Wcast-align and the search functions
++   are legitimately pure, but GCC's analysis can't prove they always
++   return normally.  Suppress these in the SIMD section.  */
++#if defined __GNUC__ && !defined __clang__
++# pragma GCC diagnostic push
++# pragma GCC diagnostic ignored "-Wcast-align"
++# pragma GCC diagnostic ignored "-Wsuggest-attribute=pure"
++#endif
++
++#if defined(__x86_64__) || defined(_M_X64)
++# include <immintrin.h>
++
++__attribute__ ((target ("avx2")))
++static const char *
++perf_memmem_avx2 (const char *hay, size_t hlen,
++                  const char *ndl, size_t nlen)
++{
++  if (nlen == 0)
++    return hay;
++  if (nlen > hlen)
++    return nullptr;
++  unsigned char first = (unsigned char) ndl[0];
++  const char *end = hay + hlen - nlen + 1;
++  const char *p = hay;
++
++  if (nlen >= 2)
++    {
++      unsigned char second = (unsigned char) ndl[1];
++      __m256i v0 = _mm256_set1_epi8 ((char) first);
++      __m256i v1 = _mm256_set1_epi8 ((char) second);
++      const char *scan_end = hay + hlen - 1;
++
++      /* 4x unrolled: process 128 bytes per iteration.  */
++      while (p + 129 <= scan_end)
++        {
++          __m256i a0 = _mm256_loadu_si256 ((const __m256i *) p);
++          __m256i a1 = _mm256_loadu_si256 ((const __m256i *) (p + 1));
++          __m256i c0 = _mm256_loadu_si256 ((const __m256i *) (p + 32));
++          __m256i c1 = _mm256_loadu_si256 ((const __m256i *) (p + 33));
++          __m256i e0 = _mm256_loadu_si256 ((const __m256i *) (p + 64));
++          __m256i e1 = _mm256_loadu_si256 ((const __m256i *) (p + 65));
++          __m256i g0 = _mm256_loadu_si256 ((const __m256i *) (p + 96));
++          __m256i g1 = _mm256_loadu_si256 ((const __m256i *) (p + 97));
++          int m0 = _mm256_movemask_epi8 (_mm256_and_si256 (
++              _mm256_cmpeq_epi8 (a0, v0), _mm256_cmpeq_epi8 (a1, v1)));
++          int m1 = _mm256_movemask_epi8 (_mm256_and_si256 (
++              _mm256_cmpeq_epi8 (c0, v0), _mm256_cmpeq_epi8 (c1, v1)));
++          int m2 = _mm256_movemask_epi8 (_mm256_and_si256 (
++              _mm256_cmpeq_epi8 (e0, v0), _mm256_cmpeq_epi8 (e1, v1)));
++          int m3 = _mm256_movemask_epi8 (_mm256_and_si256 (
++              _mm256_cmpeq_epi8 (g0, v0), _mm256_cmpeq_epi8 (g1, v1)));
++          if (__builtin_expect (m0 | m1 | m2 | m3, 0))
++            {
++              if (m0)
++                while (m0)
++                  {
++                    int bit = __builtin_ctz ((unsigned) m0);
++                    const char *q = p + bit;
++                    if (q < end && memcmp (q, ndl, nlen) == 0)
++                      return q;
++                    m0 &= m0 - 1;
++                  }
++              if (m1)
++                while (m1)
++                  {
++                    int bit = __builtin_ctz ((unsigned) m1);
++                    const char *q = p + 32 + bit;
++                    if (q < end && memcmp (q, ndl, nlen) == 0)
++                      return q;
++                    m1 &= m1 - 1;
++                  }
++              if (m2)
++                while (m2)
++                  {
++                    int bit = __builtin_ctz ((unsigned) m2);
++                    const char *q = p + 64 + bit;
++                    if (q < end && memcmp (q, ndl, nlen) == 0)
++                      return q;
++                    m2 &= m2 - 1;
++                  }
++              if (m3)
++                while (m3)
++                  {
++                    int bit = __builtin_ctz ((unsigned) m3);
++                    const char *q = p + 96 + bit;
++                    if (q < end && memcmp (q, ndl, nlen) == 0)
++                      return q;
++                    m3 &= m3 - 1;
++                  }
++            }
++          p += 128;
++        }
++
++      /* Handle remaining <=128 bytes with 32-byte blocks.  */
++      while (p + 33 <= scan_end)
++        {
++          __m256i b0 = _mm256_loadu_si256 ((const __m256i *) p);
++          __m256i b1 = _mm256_loadu_si256 ((const __m256i *) (p + 1));
++          int m = _mm256_movemask_epi8 (_mm256_and_si256 (
++              _mm256_cmpeq_epi8 (b0, v0), _mm256_cmpeq_epi8 (b1, v1)));
++          while (m)
++            {
++              int bit = __builtin_ctz ((unsigned) m);
++              const char *q = p + bit;
++              if (q < end && memcmp (q, ndl, nlen) == 0)
++                return q;
++              m &= m - 1;
++            }
++          p += 32;
++        }
++    }
++
++  /* Tail: byte-by-byte with memchr for first byte.  */
++  while (p < end)
++    {
++      const char *q = memchr (p, first, (size_t) (end - p));
++      if (!q)
++        return nullptr;
++      if (memcmp (q, ndl, nlen) == 0)
++        return q;
++      p = q + 1;
++    }
++  return nullptr;
++}
++#endif /* x86_64 */
++
++const char *
++perf_memmem (const char *hay, size_t hlen,
++             const char *ndl, size_t nlen)
++{
++#if defined(__x86_64__) || defined(_M_X64)
++  return perf_memmem_avx2 (hay, hlen, ndl, nlen);
++#elif defined(__aarch64__) || defined(_M_ARM64)
++  return perf_memmem_neon (hay, hlen, ndl, nlen);
++#elif defined(__loongarch_sx)
++  return perf_memmem_lsx (hay, hlen, ndl, nlen);
++#elif (defined(__riscv_v) || defined(__riscv_vector))
++  return perf_memmem_rvv (hay, hlen, ndl, nlen);
++#else
++  const void *r = memmem (hay, hlen, ndl, nlen);
++  return (const char *) r;
++#endif
++}
++
++#if defined __GNUC__ && !defined __clang__
++# pragma GCC diagnostic pop
++#endif
++
++void
++perf_advise_sequential (void const *addr, size_t len)
++{
++#if defined MADV_SEQUENTIAL
++  if (addr && len)
++    madvise ((void *) addr, len, MADV_SEQUENTIAL);
++#elif defined POSIX_MADV_SEQUENTIAL
++  if (addr && len)
++    posix_madvise ((void *) addr, len, POSIX_MADV_SEQUENTIAL);
++#else
++  (void) addr;
++  (void) len;
++#endif
++}
+diff --git a/src/perf.h b/src/perf.h
+new file mode 100644
+index 0000000..0198d7b
+--- /dev/null
++++ b/src/perf.h
+@@ -0,0 +1,48 @@
++/* perf.h - performance helpers inspired by ripgrep techniques.
++   Copyright 2026.  Part of GNU grep performance work.  */
++
++#ifndef GREP_PERF_H
++#define GREP_PERF_H 1
++
++#include <stddef.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <sys/types.h>
++
++/* Larger I/O buffers reduce syscall overhead on fast SSDs, matching
++   ripgrep's preference for generous read sizes.  */
++#ifndef GREP_GOOD_READSIZE_MIN
++# define GREP_GOOD_READSIZE_MIN (256 * 1024)
++#endif
++
++/* mmap threshold: files at least this large may be mmapped when seekable.  */
++#ifndef GREP_MMAP_MIN
++# define GREP_MMAP_MIN (32 * 1024)
++#endif
++
++/* Fast NUL / binary scan using word-at-a-time operations (like memchr).  */
++bool perf_buf_has_nulls (char const *buf, size_t size) __attribute__ ((pure));
++bool perf_all_zeros (char const *buf, size_t size) __attribute__ ((pure));
++
++/* Count newlines in a buffer quickly (word-at-a-time).  */
++size_t perf_count_newlines (char const *buf, size_t size) __attribute__ ((pure));
++
++/* Return true if PATTERN (LEN bytes, not necessarily NUL-terminated) is
++   entirely ASCII (bytes < 0x80).  Safe to search as bytes in UTF-8 locales.  */
++bool perf_is_ascii_pattern (char const *pattern, size_t len) __attribute__ ((pure));
++
++/* Return true if the pattern has no regex metacharacters (treatable as -F).  */
++bool perf_is_literal_pattern (char const *pattern, size_t len) __attribute__ ((pure));
++
++/* Attempt to mmap FD of size SIZE.  Returns pointer and sets *MAP_LEN,
++   or NULL on failure / unsuitability.  Caller must munmap.  */
++void *perf_try_mmap (int fd, off_t size, size_t *map_len);
++
++/* SIMD-accelerated memmem (AVX2 on x86_64, glibc fallback elsewhere).  */
++const char *perf_memmem (const char *hay, size_t hlen,
++                         const char *ndl, size_t nlen);
++
++/* Hint kernel that we will scan sequentially.  */
++void perf_advise_sequential (void const *addr, size_t len);
++
++#endif /* GREP_PERF_H */
+-- 
+2.53.0
+

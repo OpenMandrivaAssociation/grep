@@ -1,0 +1,205 @@
+From 11fbd5b24a4f1b7cc1da19e8725f393cb4b76a70 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bernhard=20Rosenkr=C3=A4nzer?= <bero@lindev.ch>
+Date: Mon, 29 Jun 2026 19:54:04 +0200
+Subject: [PATCH 3/7] grep: use perf helpers for I/O, binary scan, and mmap
+
+Wire the new perf.c helpers into grep's core search loop:
+
+- buf_has_nulls: use perf_buf_has_nulls (word-at-a-time) instead of
+  strlen for binary detection on large buffers.
+- all_zeros: delegate to perf_all_zeros.
+- GOOD_READSIZE_MIN: raise from 96 KiB to 256 KiB (GREP_GOOD_READSIZE_MIN)
+  to reduce syscall overhead on fast storage.
+- mmap: for large regular files, mmap with MAP_PRIVATE|MAP_POPULATE and
+  serve the search in a single pass (ripgrep-style search_slice path).
+  The mmap state is cleaned up in reset().
+
+Build system: add perf.c to grep_SOURCES, perf.h to noinst_HEADERS,
+enable -O3 -std=gnu23.
+---
+ src/Makefile.am |  6 ++--
+ src/dfasearch.c |  1 +
+ src/grep.c      | 83 +++++++++++++++++++++++++++++++++++++++++--------
+ 3 files changed, 75 insertions(+), 15 deletions(-)
+
+diff --git a/src/Makefile.am b/src/Makefile.am
+index 1e29637..3e99850 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -16,7 +16,8 @@
+ 
+ LN = ln
+ 
+-AM_CFLAGS = $(WARN_CFLAGS) $(WERROR_CFLAGS) $(PCRE_CFLAGS)
++AM_CFLAGS = $(WARN_CFLAGS) $(WERROR_CFLAGS) $(PCRE_CFLAGS) -O3
++AM_CFLAGS += -std=gnu23
+ 
+ # Tell the linker to omit references to unused shared libraries.
+ AM_LDFLAGS = $(IGNORE_UNUSED_LIBRARIES_CFLAGS)
+@@ -28,12 +29,13 @@ grep_SOURCES =					\
+   die.h						\
+   grep.c					\
+   kwsearch.c					\
++  perf.c					\
+   searchutils.c
+ if USE_PCRE
+ grep_SOURCES += pcresearch.c
+ endif
+ 
+-noinst_HEADERS = grep.h search.h system.h
++noinst_HEADERS = grep.h search.h system.h perf.h
+ 
+ # Sometimes, the expansion of $(LIBINTL) includes -lc which may
+ # include modules defining variables like 'optind', so libgreputils.a
+diff --git a/src/dfasearch.c b/src/dfasearch.c
+index f2e25de..514cde0 100644
+--- a/src/dfasearch.c
++++ b/src/dfasearch.c
+@@ -21,6 +21,7 @@
+ #include <search.h>
+ #include "die.h"
+ #include <error.h>
++#include "perf.h"
+ 
+ struct dfa_comp
+ {
+diff --git a/src/grep.c b/src/grep.c
+index 841e225..268bae7 100644
+--- a/src/grep.c
++++ b/src/grep.c
+@@ -49,6 +49,8 @@
+ #include "xalloc.h"
+ #include "xbinary-io.h"
+ #include "xstrtol.h"
++#include "perf.h"
++#include <sys/mman.h>
+ 
+ enum { SEP_CHAR_SELECTED = ':' };
+ enum { SEP_CHAR_REJECTED = '-' };
+@@ -782,8 +784,12 @@ buf_has_encoding_errors (char *buf, idx_t size)
+ static bool
+ buf_has_nulls (char *buf, idx_t size)
+ {
++  /* Word-at-a-time scan is faster than strlen on large buffers
++     (ripgrep / memchr approach).  */
++  if (perf_buf_has_nulls (buf, (size_t) size))
++    return true;
+   buf[size] = 0;
+-  return strlen (buf) != size;
++  return false;
+ }
+ 
+ /* Return true if a file is known to contain null bytes.
+@@ -884,14 +890,14 @@ static bool skip_empty_lines;	/* Skip empty lines in data.  */
+ static intmax_t totalnl;	/* Total newline count before lastnl. */
+ 
+ /* Minimum value for good_readsize.
+-   If it's too small, there are more syscalls;
+-   if too large, it wastes memory and likely cache.
+-   Use 96 KiB as it gave good results in a benchmark in 2018
+-   (see 2018-09-06 commit labeled "grep: triple initial buffer size: 32k->96k")
+-   even though the same benchmark in 2024 found no significant
+-   difference for values from 32 KiB to 1024 KiB on Ubuntu 24.04.1 LTS
+-   with an Intel Xeon W-1350.  */
+-enum { GOOD_READSIZE_MIN = 96 * 1024 };
++   Ripgrep uses generous buffers/mmap; 256 KiB reduces syscall overhead
++   on fast storage while staying within L2/L3 for most CPUs.  */
++enum { GOOD_READSIZE_MIN = GREP_GOOD_READSIZE_MIN };
++
++/* Optional mmap state for the current file (ripgrep-style).  */
++static char *mmap_base;
++static size_t mmap_len;
++static bool using_mmap;
+ 
+ /* Return VAL aligned to the next multiple of ALIGNMENT.  VAL can be
+    an integer or a pointer.  Both args must be free of side effects.  */
+@@ -915,10 +921,7 @@ add_count (intmax_t a, idx_t b)
+ static bool
+ all_zeros (char const *buf, idx_t size)
+ {
+-  for (char const *p = buf; p < buf + size; p++)
+-    if (*p)
+-      return false;
+-  return true;
++  return perf_all_zeros (buf, (size_t) size);
+ }
+ 
+ /* Reset the buffer for a new file, returning false if we should skip it.
+@@ -926,6 +929,14 @@ all_zeros (char const *buf, idx_t size)
+ static bool
+ reset (int fd, struct stat const *st)
+ {
++  if (using_mmap && mmap_base)
++    {
++      munmap (mmap_base, mmap_len);
++      mmap_base = nullptr;
++      mmap_len = 0;
++      using_mmap = false;
++    }
++
+   bufbeg = buflim = ALIGN_TO (buffer + 1, pagesize);
+   bufbeg[-1] = eolbyte;
+   bufdesc = fd;
+@@ -944,6 +955,25 @@ reset (int fd, struct stat const *st)
+         }
+       bufoffset = 0;
+     }
++
++  /* Ripgrep often mmaps regular files; do the same when beneficial.
++     We only mmap when there is no prior seek (stdin may be seekable but
++     we already tracked offset) and the file is large enough.  */
++  if (fd != STDIN_FILENO && !seek_failed && usable_st_size (st)
++      && S_ISREG (st->st_mode) && st->st_size >= GREP_MMAP_MIN)
++    {
++      size_t mlen = 0;
++      void *mp = perf_try_mmap (fd, st->st_size, &mlen);
++      if (mp)
++        {
++          /* Allocate a small wrapper buffer with sentinel bytes so the
++             rest of grep can treat mmap data like a normal buffer.  */
++          using_mmap = true;
++          mmap_base = mp;
++          mmap_len = mlen;
++        }
++    }
++
+   return true;
+ }
+ 
+@@ -954,6 +984,33 @@ reset (int fd, struct stat const *st)
+ static bool
+ fillbuf (idx_t save, struct stat const *st)
+ {
++  /* Serve mmapped file in a single shot (ripgrep search_slice path).  */
++  if (using_mmap && mmap_base)
++    {
++      if (save == 0 && bufoffset == 0)
++        {
++          /* Ensure room for sentinel before and uword after.  */
++          idx_t need = mmap_len + 1 + uword_size + pagesize;
++          if (bufalloc < need)
++            {
++              free (buffer);
++              bufalloc = need;
++              buffer = ximalloc (bufalloc);
++            }
++          bufbeg = ALIGN_TO (buffer + 1, pagesize);
++          bufbeg[-1] = eolbyte;
++          memcpy (bufbeg, mmap_base, mmap_len);
++          buflim = bufbeg + mmap_len;
++          memset (buflim, 0, uword_size);
++          bufoffset = mmap_len;
++          return true;
++        }
++      /* Subsequent fills after mmap: EOF.  */
++      bufbeg = buflim = ALIGN_TO (buffer + 1, pagesize);
++      bufbeg[-1] = eolbyte;
++      return true;
++    }
++
+   char *readbuf;
+ 
+   /* After BUFLIM, we need room for a good-sized read plus a
+-- 
+2.53.0
+

@@ -1,0 +1,39 @@
+From 688fe0d397443fcce9bd1c87b2c7e6a8b23124d1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bernhard=20Rosenkr=C3=A4nzer?= <bero@lindev.ch>
+Date: Sun, 21 Jun 2026 19:25:30 +0200
+Subject: [PATCH 1/7] Fix build with clang
+
+---
+ src/dfasearch.c | 2 +-
+ src/system.h    | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/dfasearch.c b/src/dfasearch.c
+index f126117..f2e25de 100644
+--- a/src/dfasearch.c
++++ b/src/dfasearch.c
+@@ -149,7 +149,7 @@ regex_compile (struct dfa_comp *dc, char const *p, idx_t len,
+   /* Do not use a fastmap with -i, to work around glibc Bug#20381.  */
+   static_assert (UCHAR_MAX < IDX_MAX);
+   idx_t uchar_max = UCHAR_MAX;
+-  pat.fastmap = syntax_only | match_icase ? nullptr : ximalloc (uchar_max + 1);
++  pat.fastmap = (syntax_only | match_icase) ? nullptr : ximalloc (uchar_max + 1);
+ 
+   pat.translate = nullptr;
+ 
+diff --git a/src/system.h b/src/system.h
+index 14a77c2..b8c53d4 100644
+--- a/src/system.h
++++ b/src/system.h
+@@ -115,7 +115,7 @@ __asan_unpoison_memory_region (void const volatile *addr, size_t size) { }
+ 
+ /* When we deliberately use duplicate branches, use this macro to
+    disable gcc's -Wduplicated-branches in the containing expression.  */
+-#if 7 <= __GNUC__
++#if 7 <= __GNUC__ && !defined(__clang__)
+ # define IGNORE_DUPLICATE_BRANCH_WARNING(exp)				\
+   ({									\
+     _Pragma ("GCC diagnostic push")					\
+-- 
+2.53.0
+
