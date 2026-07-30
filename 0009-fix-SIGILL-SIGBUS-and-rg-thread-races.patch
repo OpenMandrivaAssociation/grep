@@ -1,0 +1,609 @@
+From: Bernhard Rosenkränzer <bero@lindev.ch>
+Date: Thu, 30 Jul 2026 14:30:00 +0200
+Subject: [PATCH 9/9] fix: SIGILL on non-AVX2 CPUs, SIGBUS mmap, rg thread races
+
+1. Illegal Instruction on older hardware:
+   perf_memmem always called the target("avx2") path with no runtime
+   CPU check.  Use __builtin_cpu_supports("avx2") and fall back to
+   glibc memmem.  (rg.cpp already had runtime dispatch; only perf.c
+   was wrong.)
+
+2. SIGBUS in perf_try_mmap / search_file_ex:
+   Patch 0008 rounded map size up, but entire pages past EOF still
+   have no file backing under MAP_PRIVATE — kernel delivers SIGBUS.
+   Map an anonymous region then overlay the file with MAP_FIXED so
+   the DFA sentinel byte always lands on anonymous zeros.
+
+3. SIGSEGV in should_ignore_path_reg:
+   Parallel walkers read g_ignore_reg_by_dir without locking while
+   ensure_dir_ignores_registered rehashes under the writer lock.
+   Use shared_mutex; readers take shared_lock.
+
+4. SIGSEGV/SIGABRT in dfaexec_main / EGexecute / Pexecute:
+   A single global g_pat is shared across parallel search workers.
+   GNU DFA mutates state (state_index, trans tables) and PCRE match
+   data is not thread-safe.  Serialize those engines via g_exec_call;
+   Fexecute/kwset stays lock-free.
+
+5. SIGSEGV on rg -m / --max-count:
+   Short option string listed "m" without ":", so getopt never set
+   optarg and atoll(optarg) crashed.  Use "m:" and null-check optarg.
+
+Also lock g_git_worktree_cache and snapshot VCS roots into TLS so
+pointers are not invalidated by rehash.
+
+diff -ruN clean/grep-3.12.35-24da-modified/src/grep.c fixed/src/grep.c
+--- a/src/grep.c	2026-07-30 14:30:48.987347770 +0200
++++ b/src/grep.c	2026-07-30 14:31:37.755498633 +0200
+@@ -931,11 +931,9 @@
+ {
+   if (using_mmap && mmap_base)
+     {
+-      /* mmap_len is the file content length; the actual mapped region
+-         was rounded up to the next page for the sentinel byte.  */
+-      long pg = sysconf (_SC_PAGESIZE);
+-      size_t real_map = (mmap_len + (size_t) pg) & ~((size_t) pg - 1);
+-      munmap (mmap_base, real_map);
++      /* mmap_len is the file content length; unmap the full region
++         allocated by perf_try_mmap (anon + file overlay + sentinel).  */
++      munmap (mmap_base, perf_mmap_unmap_len (mmap_len));
+       mmap_base = nullptr;
+       mmap_len = 0;
+       using_mmap = false;
+diff -ruN clean/grep-3.12.35-24da-modified/src/perf.c fixed/src/perf.c
+--- a/src/perf.c	2026-07-30 14:30:48.987542842 +0200
++++ b/src/perf.c	2026-07-30 14:31:37.755249390 +0200
+@@ -146,49 +146,83 @@
+   return true;
+ }
+ 
++size_t
++perf_mmap_unmap_len (size_t file_len)
++{
++  long page = sysconf (_SC_PAGESIZE);
++  if (page <= 0)
++    page = 4096;
++  /* Cover file content plus one sentinel byte, rounded up to a page.  */
++  return (file_len + 1 + (size_t) page - 1) & ~((size_t) page - 1);
++}
++
+ void *
+ perf_try_mmap (int fd, off_t size, size_t *map_len)
+ {
+   if (size < GREP_MMAP_MIN || (uintmax_t) size > SIZE_MAX - 1)
+     return nullptr;
+ 
+-  /* Map enough for the file plus one sentinel byte (DFA writes EOL at
+-     buffer end via *end = eol in dfaexec_main).  MAP_PRIVATE CoW keeps
+-     the file read-only on disk.
+-
+-     Critical: when file_len is page-aligned, the +1 byte would land on
+-     a page with no file backing and the kernel delivers SIGBUS.  Round
+-     up to the next page so the sentinel always falls on a valid (zero-
+-     filled beyond EOF) MAP_PRIVATE page.  */
++  /* DFA (dfaexec_main) and EGexecute (rawmemchr) need a writable sentinel
++     byte at offset file_len.  A pure file-backed mmap cannot provide that
++     when file_len is page-aligned: entire pages past EOF have no file
++     backing and the kernel delivers SIGBUS on first access — even with
++     MAP_PRIVATE.  (Zero-fill past EOF only applies within the last
++     partial page of the file.)
++
++     Fix: anonymous map for the full region (file + sentinel padding),
++     then overlay the file with MAP_FIXED over only the file-backed
++     extent.  The sentinel lands on remaining anonymous zeros.  */
+   size_t file_len = (size_t) size;
+   long page = sysconf (_SC_PAGESIZE);
+-  size_t map_sz = (file_len + page) & ~((size_t) page - 1);
+-  int flags = MAP_PRIVATE;
+-#ifdef MAP_POPULATE
+-  flags |= MAP_POPULATE;
+-#endif
++  if (page <= 0)
++    page = 4096;
++  size_t map_sz = perf_mmap_unmap_len (file_len);
++  size_t file_backed = file_len == 0
++    ? 0
++    : (file_len + (size_t) page - 1) & ~((size_t) page - 1);
++
+   int prot = PROT_READ | PROT_WRITE;
+-  void *p = mmap (nullptr, map_sz, prot, flags, fd, 0);
++  void *p = mmap (nullptr, map_sz, prot,
++                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+   if (p == MAP_FAILED)
++    return nullptr;
++
++  if (file_backed > 0)
+     {
+-      /* Retry without POPULATE (older kernels / exotic mounts).  */
+-      p = mmap (nullptr, map_sz, prot, MAP_PRIVATE, fd, 0);
+-      if (p == MAP_FAILED)
+-        return nullptr;
++      int flags = MAP_PRIVATE | MAP_FIXED;
++#ifdef MAP_POPULATE
++      flags |= MAP_POPULATE;
++#endif
++      void *fm = mmap (p, file_backed, prot, flags, fd, 0);
++      if (fm == MAP_FAILED)
++        {
++          /* Retry without POPULATE (older kernels / exotic mounts).  */
++          fm = mmap (p, file_backed, prot, MAP_PRIVATE | MAP_FIXED, fd, 0);
++          if (fm == MAP_FAILED)
++            {
++              munmap (p, map_sz);
++              return nullptr;
++            }
++        }
+     }
++
+   /* Extra byte for DFA sentinel; not part of file content.  */
+   ((char *) p)[file_len] = 0;
+ 
+ #if defined MADV_SEQUENTIAL
+-  madvise (p, file_len, MADV_SEQUENTIAL);
++  if (file_len)
++    madvise (p, file_len, MADV_SEQUENTIAL);
+ #elif defined POSIX_MADV_SEQUENTIAL
+-  posix_madvise (p, file_len, POSIX_MADV_SEQUENTIAL);
++  if (file_len)
++    posix_madvise (p, file_len, POSIX_MADV_SEQUENTIAL);
+ #endif
+ #if defined MADV_WILLNEED
+-  madvise (p, file_len, MADV_WILLNEED);
++  if (file_len)
++    madvise (p, file_len, MADV_WILLNEED);
+ #endif
+ #if defined MADV_HUGEPAGE
+-  madvise (p, file_len, MADV_HUGEPAGE);
++  if (file_len)
++    madvise (p, file_len, MADV_HUGEPAGE);
+ #endif
+ 
+   *map_len = file_len;
+@@ -650,7 +684,15 @@
+              const char *ndl, size_t nlen)
+ {
+ #if defined(__x86_64__) || defined(_M_X64)
+-  return perf_memmem_avx2 (hay, hlen, ndl, nlen);
++  /* perf_memmem_avx2 is compiled with target("avx2").  Calling it on a
++     CPU without AVX2 raises SIGILL.  Dispatch at runtime so generic
++     x86_64 builds stay safe.  */
++  if (__builtin_cpu_supports ("avx2"))
++    return perf_memmem_avx2 (hay, hlen, ndl, nlen);
++  {
++    const void *r = memmem (hay, hlen, ndl, nlen);
++    return (const char *) r;
++  }
+ #elif defined(__aarch64__) || defined(_M_ARM64)
+   return perf_memmem_neon (hay, hlen, ndl, nlen);
+ #elif defined(__loongarch_sx)
+diff -ruN clean/grep-3.12.35-24da-modified/src/perf.h fixed/src/perf.h
+--- a/src/perf.h	2026-07-30 14:30:48.963561601 +0200
++++ b/src/perf.h	2026-07-30 14:31:37.754841865 +0200
+@@ -34,11 +34,17 @@
+ /* Return true if the pattern has no regex metacharacters (treatable as -F).  */
+ bool perf_is_literal_pattern (char const *pattern, size_t len) __attribute__ ((pure));
+ 
+-/* Attempt to mmap FD of size SIZE.  Returns pointer and sets *MAP_LEN,
+-   or NULL on failure / unsuitability.  Caller must munmap.  */
++/* Attempt to mmap FD of size SIZE.  Returns pointer and sets *MAP_LEN
++   to the file content length, or NULL on failure / unsuitability.
++   Caller must munmap with perf_mmap_unmap_len (*MAP_LEN).  */
+ void *perf_try_mmap (int fd, off_t size, size_t *map_len);
+ 
+-/* SIMD-accelerated memmem (AVX2 on x86_64, glibc fallback elsewhere).  */
++/* Actual mapped region length for a successful perf_try_mmap of FILE_LEN
++   content bytes (includes page padding for the DFA/rawmemchr sentinel).  */
++size_t perf_mmap_unmap_len (size_t file_len);
++
++/* SIMD-accelerated memmem (AVX2 on x86_64 with runtime CPU check,
++   glibc memmem fallback when AVX2 is unavailable).  */
+ const char *perf_memmem (const char *hay, size_t hlen,
+                          const char *ndl, size_t nlen);
+ 
+diff -ruN clean/grep-3.12.35-24da-modified/src/rg.cpp fixed/src/rg.cpp
+--- a/src/rg.cpp	2026-07-30 14:30:48.988078539 +0200
++++ b/src/rg.cpp	2026-07-30 14:43:48.625279608 +0200
+@@ -25,6 +25,7 @@
+ #include <functional>
+ #include <mutex>
+ #include <set>
++#include <shared_mutex>
+ #include <string>
+ #include <string_view>
+ #include <thread>
+@@ -70,6 +71,7 @@
+ ptrdiff_t Pexecute_whole (void *, char const *, idx_t, idx_t *, char const *);
+ #endif
+ void *perf_try_mmap (int fd, off_t size, size_t *map_len);
++size_t perf_mmap_unmap_len (size_t file_len);
+ void rg_set_input_filename (char const *path);
+ }
+ 
+@@ -327,6 +329,26 @@
+ /* Grep engine */
+ static void *g_pat = nullptr;
+ static ptrdiff_t (*g_exec) (void *, char const *, idx_t, idx_t *, char const *) = nullptr;
++/* EGexecute/Pexecute mutate shared DFA / regex / PCRE match state and are
++   not thread-safe.  Fexecute (kwset after kwsprep) is read-only.  Serialize
++   non-thread-safe engines when workers call g_exec in parallel.  */
++static bool g_exec_needs_lock = false;
++static std::mutex g_exec_mu;
++
++/* Thread-safe wrapper around g_exec for engines with shared mutable state.  */
++static ptrdiff_t
++g_exec_call (char const *buf, idx_t size, idx_t *match_size, char const *start_ptr)
++{
++  if (!g_exec || !g_pat)
++    return -1;
++  if (g_exec_needs_lock)
++    {
++      std::lock_guard lk (g_exec_mu);
++      return g_exec (g_pat, buf, size, match_size, start_ptr);
++    }
++  return g_exec (g_pat, buf, size, match_size, start_ptr);
++}
++
+ static bool g_use_dfa = false;
+ /* Multiline: engine needs the full buffer + start_ptr (Pexecute_whole, or
+    ERE/fixed when the pattern itself contains a real newline).  Otherwise
+@@ -382,9 +404,11 @@
+ /* Directories we already probed for ignore files (avoid repeat open/stat).  */
+ static std::unordered_map<std::string, int> g_ignore_dir_cache; /* dirpath -> frames added */
+ 
+-/* Parallel-walk registry: append-only frames keyed by relative dir.
+-   Mutex only on first visit; reads during walk use the map (stable pointers).  */
+-static std::mutex g_ignore_reg_mu;
++/* Parallel-walk registry: frames keyed by relative dir.
++   Writers take exclusive ownership while probing/inserting; readers take
++   shared_lock — concurrent find during rehash crashed in
++   _Hashtable::_M_locate (SIGSEGV in should_ignore_path_reg).  */
++static std::shared_mutex g_ignore_reg_mu;
+ static std::vector<IgnoreFrame> g_ignore_reg; /* owns frame storage */
+ static std::unordered_map<std::string, std::vector<size_t>> g_ignore_reg_by_dir;
+ static std::unordered_set<std::string> g_ignore_reg_loaded; /* dirpaths fully probed */
+@@ -464,13 +488,17 @@
+    .git file or directory).  .ignore / .rgignore always apply.  Cache by
+    absolute-ish dirpath to avoid repeated upward walks.  */
+ static std::unordered_map<std::string, bool> g_git_worktree_cache;
++static std::mutex g_git_worktree_mu;
+ 
+ static bool
+ dir_in_git_worktree (const std::string &dirpath)
+ {
+-  auto it = g_git_worktree_cache.find (dirpath);
+-  if (it != g_git_worktree_cache.end ())
+-    return it->second;
++  {
++    std::lock_guard lk (g_git_worktree_mu);
++    auto it = g_git_worktree_cache.find (dirpath);
++    if (it != g_git_worktree_cache.end ())
++      return it->second;
++  }
+ 
+   std::string cur = dirpath.empty () ? "." : dirpath;
+   /* Normalize relative "." to abs when possible so cache hits align.  */
+@@ -517,29 +545,38 @@
+         break;
+       walk = parent;
+     }
+-  g_git_worktree_cache.emplace (dirpath, found);
+-  if (cur != dirpath)
+-    g_git_worktree_cache.emplace (cur, found);
++  {
++    std::lock_guard lk (g_git_worktree_mu);
++    g_git_worktree_cache.emplace (dirpath, found);
++    if (cur != dirpath)
++      g_git_worktree_cache.emplace (cur, found);
++  }
+   return found;
+ }
+ 
+-/* Deepest VCS root that is a prefix of relpath; returns pointer into g_vcs_roots
+-   storage or nullptr.  Avoids per-call std::string alloc.  */
++/* Deepest VCS root that is a prefix of relpath.  Copies into TLS so the
++   returned pointer stays valid after the shared lock is released
++   (unordered_set rehash would invalidate pointers into g_vcs_roots).  */
+ static const std::string *
+ enclosing_vcs_root_ptr (const std::string &relpath)
+ {
+-  const std::string *best = nullptr;
+-  for (const auto &vr : g_vcs_roots)
+-    {
+-      if (relpath == vr
+-          || (relpath.size () > vr.size () && relpath.compare (0, vr.size (), vr) == 0
+-              && relpath[vr.size ()] == '/'))
+-        {
+-          if (!best || vr.size () > best->size ())
+-            best = &vr;
+-        }
+-    }
+-  return best;
++  thread_local std::string tls_best;
++  tls_best.clear ();
++  {
++    std::shared_lock lk (g_ignore_reg_mu);
++    for (const auto &vr : g_vcs_roots)
++      {
++        if (relpath == vr
++            || (relpath.size () > vr.size ()
++                && relpath.compare (0, vr.size (), vr) == 0
++                && relpath[vr.size ()] == '/'))
++          {
++            if (tls_best.empty () || vr.size () > tls_best.size ())
++              tls_best = vr;
++          }
++      }
++  }
++  return tls_best.empty () ? nullptr : &tls_best;
+ }
+ 
+ /* Frame at `frame_dir` applies to path under `vcs_root` (nullptr = no barrier).  */
+@@ -1288,6 +1325,8 @@
+     }
+   bool ignored = false;
+   std::string_view rpv (relpath);
++  /* Snapshot VCS root before taking the registry lock (separate shared
++     locks; shared_mutex is not recursive).  */
+   const std::string *vcs = enclosing_vcs_root_ptr (relpath);
+ 
+   auto apply_idxs = [&] (const std::vector<size_t> *idxs, std::string_view sub,
+@@ -1304,6 +1343,7 @@
+       }
+   };
+ 
++  std::shared_lock lk (g_ignore_reg_mu);
+   {
+     auto it = g_ignore_reg_by_dir.find ("");
+     if (it != g_ignore_reg_by_dir.end ())
+@@ -1374,34 +1414,37 @@
+   };
+ 
+   std::string_view rpv (relpath);
+-  if (!g_ignore_reg.empty ())
+-    {
+-      auto it = g_ignore_reg_by_dir.find ("");
+-      if (it != g_ignore_reg_by_dir.end ())
+-        for (size_t idx : it->second)
+-          if (idx < g_ignore_reg.size () && check_fr (g_ignore_reg[idx], rpv))
+-            return true;
+-      size_t pos = 0;
+-      while (pos < relpath.size ())
+-        {
+-          size_t slash = relpath.find ('/', pos);
+-          std::string prefix = slash == std::string::npos
+-            ? relpath : relpath.substr (0, slash);
+-          auto jt = g_ignore_reg_by_dir.find (prefix);
+-          if (jt != g_ignore_reg_by_dir.end ())
+-            {
+-              std::string_view sub = slash == std::string::npos
+-                ? std::string_view (".") : rpv.substr (slash + 1);
+-              for (size_t idx : jt->second)
+-                if (idx < g_ignore_reg.size () && check_fr (g_ignore_reg[idx], sub))
+-                  return true;
+-            }
+-          if (slash == std::string::npos)
+-            break;
+-          pos = slash + 1;
+-        }
+-      return false;
+-    }
++  {
++    std::shared_lock lk (g_ignore_reg_mu);
++    if (!g_ignore_reg.empty ())
++      {
++        auto it = g_ignore_reg_by_dir.find ("");
++        if (it != g_ignore_reg_by_dir.end ())
++          for (size_t idx : it->second)
++            if (idx < g_ignore_reg.size () && check_fr (g_ignore_reg[idx], rpv))
++              return true;
++        size_t pos = 0;
++        while (pos < relpath.size ())
++          {
++            size_t slash = relpath.find ('/', pos);
++            std::string prefix = slash == std::string::npos
++              ? relpath : relpath.substr (0, slash);
++            auto jt = g_ignore_reg_by_dir.find (prefix);
++            if (jt != g_ignore_reg_by_dir.end ())
++              {
++                std::string_view sub = slash == std::string::npos
++                  ? std::string_view (".") : rpv.substr (slash + 1);
++                for (size_t idx : jt->second)
++                  if (idx < g_ignore_reg.size () && check_fr (g_ignore_reg[idx], sub))
++                    return true;
++              }
++            if (slash == std::string::npos)
++              break;
++            pos = slash + 1;
++          }
++        return false;
++      }
++  }
+   for (const auto &fr : g_ignore_stack)
+     {
+       std::string_view sub = rpv;
+@@ -1691,6 +1734,8 @@
+ static void
+ compile_pattern (const std::string &pat_in)
+ {
++  g_exec_needs_lock = false;
++
+   /* -U: convert `\n` escapes to real newlines before anything else (ripgrep).  */
+   std::string pat = opt_multiline ? multiline_preprocess_pattern (pat_in)
+                                   : pat_in;
+@@ -1784,6 +1829,7 @@
+       g_keys_storage.push_back ('\n');
+       keycc = static_cast<idx_t> (pcre_pat.size ());
+       g_pat = Pcompile (g_keys_storage.data (), keycc, 0, false);
++      g_exec_needs_lock = true;
+       /* -U needs whole-buffer matching; line-oriented Pexecute cannot span \n.  */
+       if (opt_multiline)
+         {
+@@ -1825,6 +1871,7 @@
+     {
+       g_pat = GEAcompile (g_keys_storage.data (), keycc, RE_SYNTAX_EGREP, false);
+       g_exec = EGexecute;
++      g_exec_needs_lock = true;
+       g_use_dfa = true;
+       if (opt_multiline && pat_has_nl)
+         g_ml_whole_buffer = true;
+@@ -2571,7 +2618,7 @@
+   if (g_use_dfa && g_exec && g_pat)
+     {
+       idx_t ms = 0;
+-      ptrdiff_t mo = g_exec (g_pat, ls, static_cast<idx_t> (llen), &ms, nullptr);
++      ptrdiff_t mo = g_exec_call (ls, static_cast<idx_t> (llen), &ms, nullptr);
+       return mo >= 0;
+     }
+   return false;
+@@ -2643,7 +2690,7 @@
+       while (off < static_cast<idx_t> (mlen))
+         {
+           idx_t ms = 0;
+-          ptrdiff_t mo = g_exec (g_pat, ls + off, static_cast<idx_t> (mlen) - off, &ms, nullptr);
++          ptrdiff_t mo = g_exec_call (ls + off, static_cast<idx_t> (mlen) - off, &ms, nullptr);
+           if (mo < 0)
+             break;
+           (*nspans)++;
+@@ -3496,7 +3543,7 @@
+               off = static_cast<idx_t> (pf - base);
+             }
+           idx_t ms = 0;
+-          ptrdiff_t mo = g_exec (g_pat, base + off, size - off, &ms, nullptr);
++          ptrdiff_t mo = g_exec_call (base + off, size - off, &ms, nullptr);
+           if (mo < 0)
+             break;
+           const char *hit = base + off + mo;
+@@ -3551,9 +3598,9 @@
+     if (abs_off > static_cast<idx_t> (size))
+       return -1;
+     if (g_ml_whole_buffer)
+-      return g_exec (g_pat, data, static_cast<idx_t> (size), ms_out,
++      return g_exec_call (data, static_cast<idx_t> (size), ms_out,
+                      data + abs_off);
+-    ptrdiff_t mo = g_exec (g_pat, data + abs_off,
++    ptrdiff_t mo = g_exec_call (data + abs_off,
+                            static_cast<idx_t> (size) - abs_off, ms_out,
+                            nullptr);
+     if (mo < 0)
+@@ -4278,7 +4325,7 @@
+           off = static_cast<idx_t> (pf - base);
+         }
+       idx_t ms = 0;
+-      ptrdiff_t mo = g_exec (g_pat, base + off, size - off, &ms, nullptr);
++      ptrdiff_t mo = g_exec_call (base + off, size - off, &ms, nullptr);
+       if (mo < 0)
+         break;
+       const char *b = base + off + mo;
+@@ -4664,7 +4711,7 @@
+           off = static_cast<idx_t> (pf - base);
+         }
+       idx_t ms = 0;
+-      ptrdiff_t mo = g_exec (g_pat, base + off, size - off, &ms, nullptr);
++      ptrdiff_t mo = g_exec_call (base + off, size - off, &ms, nullptr);
+       if (mo < 0)
+         break;
+       const char *ls = base + off + mo;
+@@ -5638,7 +5685,7 @@
+           while (off < static_cast<idx_t> (size))
+             {
+               idx_t ms = 0;
+-              ptrdiff_t mo = g_exec (g_pat, data + off, size - off, &ms, nullptr);
++              ptrdiff_t mo = g_exec_call (data + off, size - off, &ms, nullptr);
+               if (mo < 0)
+                 break;
+               const char *b = data + off + mo;
+@@ -5754,7 +5801,7 @@
+         if (g_use_dfa && g_exec && g_pat)
+           {
+             idx_t ms = 0;
+-            ptrdiff_t mo = g_exec (g_pat, from, static_cast<idx_t> (end - from), &ms, nullptr);
++            ptrdiff_t mo = g_exec_call (from, static_cast<idx_t> (end - from), &ms, nullptr);
+             if (mo < 0)
+               return end;
+             return from + mo;
+@@ -6626,30 +6673,51 @@
+       size_t unmap_len = mlen;
+       if (!map)
+         {
+-          /* Round up to next page so the sentinel byte never falls on
+-             an unbacked page (SIGBUS when file_len is page-aligned).  */
++          /* Same anon+file-overlay approach as perf_try_mmap: pure
++             file-backed mmap past EOF is SIGBUS on page-aligned sizes.  */
++          size_t file_len = static_cast<size_t> (st.st_size);
++          size_t map_sz = perf_mmap_unmap_len (file_len);
+           long pg = sysconf (_SC_PAGESIZE);
+-          size_t map_sz = (static_cast<size_t> (st.st_size) + pg)
+-                          & ~(static_cast<size_t> (pg) - 1);
+-          map = mmap (nullptr, map_sz, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+-          if (map != MAP_FAILED)
+-            {
+-              mlen = static_cast<size_t> (st.st_size);
+-              unmap_len = map_sz;
+-              static_cast<char *> (map)[mlen] = 0;
++          if (pg <= 0)
++            pg = 4096;
++          size_t file_backed = file_len == 0
++            ? 0
++            : (file_len + static_cast<size_t> (pg) - 1)
++              & ~(static_cast<size_t> (pg) - 1);
++          void *base = mmap (nullptr, map_sz, PROT_READ | PROT_WRITE,
++                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++          if (base != MAP_FAILED)
++            {
++              bool ok = true;
++              if (file_backed > 0)
++                {
++                  void *fm = mmap (base, file_backed, PROT_READ | PROT_WRITE,
++                                   MAP_PRIVATE | MAP_FIXED, fd, 0);
++                  if (fm == MAP_FAILED)
++                    {
++                      munmap (base, map_sz);
++                      ok = false;
++                    }
++                }
++              if (ok)
++                {
++                  map = base;
++                  mlen = file_len;
++                  unmap_len = map_sz;
++                  static_cast<char *> (map)[mlen] = 0;
+ #ifdef MADV_SEQUENTIAL
+-              madvise (map, mlen, MADV_SEQUENTIAL);
++                  if (mlen)
++                    madvise (map, mlen, MADV_SEQUENTIAL);
+ #endif
++                }
+             }
+-          else
+-            map = nullptr;
+         }
+       else
+         {
+-          long pg2 = sysconf (_SC_PAGESIZE);
+-          unmap_len = (mlen + pg2) & ~(static_cast<size_t> (pg2) - 1);
++          unmap_len = perf_mmap_unmap_len (mlen);
+ #ifdef MADV_SEQUENTIAL
+-          madvise (map, mlen, MADV_SEQUENTIAL);
++          if (mlen)
++            madvise (map, mlen, MADV_SEQUENTIAL);
+ #endif
+         }
+       if (map)
+@@ -7813,7 +7881,7 @@
+ 
+   int c;
+   while ((c = getopt_long (argc, argv,
+-                           "ace:E:Ff:iIlLmnNoqHsSuvwxg:j:t:T:0oVA:B:C:M:r:UPpbId",
++                           "ace:E:Ff:iIlLm:nNoqHsSuvwxg:j:t:T:0oVA:B:C:M:r:UPpbId",
+                            longopts, nullptr)) != -1)
+     {
+       switch (c)
+@@ -7846,7 +7914,7 @@
+           opt_iglobs.emplace_back (optarg);
+           break;
+         case 'j': opt_threads = atoi (optarg); break;
+-        case 'm': opt_max_count = atoll (optarg); break;
++        case 'm': opt_max_count = optarg ? atoll (optarg) : INTMAX_MAX; break;
+         case 'M': opt_max_columns = atoll (optarg); break;
+         case 1071: opt_max_columns_preview = true; break;
+         case 't': opt_type = optarg; break;
