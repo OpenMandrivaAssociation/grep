@@ -3,7 +3,7 @@
 Summary:	The GNU versions of grep pattern matching utilities
 Name:		grep
 Version:	3.12.35
-Release:	3
+Release:	4
 License:	GPLv3
 Group:		Text tools
 Url:		https://www.gnu.org/software/grep/grep.html
@@ -89,7 +89,76 @@ export ac_cv_search_pcre_compile="$(pkg-config --libs --static libpcre2-8)"
 	--enable-perl-regexp \
 	--enable-threads=posix
 
-%make_build CFLAGS="%{optflags}"
+%make_build CFLAGS="%{optflags}" CXXFLAGS="%{optflags}"
+
+# Train on typical search paths. The test suite overweights error handling.
+%pgo
+export LLVM_PROFILE_FILE="%{_pgo_profile_dir}/grep-%%m-%%p.profraw"
+g=src/grep
+r=src/rg
+[ -x "$g" ] || { echo "PGO: $g missing"; exit 1; }
+[ -x "$r" ] || { echo "PGO: $r missing"; exit 1; }
+
+train=pgo-train
+mkdir -p "$train"
+# Source tree is the only corpus available at build time. Repeat it so
+# SIMD / DFA / PCRE loops actually accumulate counts.
+{
+	find src tests lib -type f \( -name '*.c' -o -name '*.h' -o -name '*.cpp' \) -print0 2>/dev/null \
+		| xargs -0 cat
+} > "$train/seed.txt" || :
+if [ ! -s "$train/seed.txt" ]; then
+	printf 'include static void return foo bar baz quux\n' > "$train/seed.txt"
+fi
+cat "$train/seed.txt" "$train/seed.txt" "$train/seed.txt" "$train/seed.txt" > "$train/big.txt"
+big=$train/big.txt
+
+run() { "$@" >/dev/null 2>&1 || :; }
+
+# Fixed, basic, ERE, PCRE, icase, word, invert, context, nomatch, print.
+# Extra print/color weight so PGO does not specialize only -c paths.
+for bin in "$g" "$r"; do
+	run "$bin" -c include "$big"
+	run "$bin" -F -c include "$big"
+	run "$bin" -c zzzzzNOMATCH_pgo_train "$big"
+	run "$bin" -E -c 'foo|bar|baz|quux|include' "$big"
+	run "$bin" -P -c '\w{5,}' "$big"
+	run "$bin" -P -c '\d+' "$big"
+	run "$bin" -P -c '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+' "$big"
+	run "$bin" -i -F -c include "$big"
+	run "$bin" -i -c 'foo|bar|include' "$big"
+	run "$bin" -i -c 'static.*void' "$big"
+	run "$bin" -n -F include "$big"
+	run "$bin" -n -i -F include "$big"
+	run "$bin" -c 'static.*void' "$big"
+	run "$bin" -n 'static.*void' "$big"
+	run "$bin" -w -F -c static "$big"
+	run "$bin" -v -c include "$big"
+	run "$bin" -C2 include "$big"
+	run "$bin" -C2 -n -F include "$big"
+	run "$bin" --color=always -n static "$big"
+	run "$bin" -e int -e void -e return -c "$big"
+	run "$bin" -n include "$big"
+	run "$bin" -F static "$big"
+done
+
+# Recurse / many-file + rg-only paths (gitignore walk, multiline, heading).
+run "$g" -r -c include src
+run "$g" -r -F -l static src
+run "$g" -r -E 'int |void |return ' src
+run "$g" -r -i error src
+run "$r" --count 'include|static|void' src
+run "$r" -F --count include src
+run "$r" -n static src
+run "$r" -i 'foo|bar|baz|quux' src
+run "$r" -P '\w{8,}' src
+run "$r" -U -c 'void\n' src
+run "$r" -w -F static src
+run "$r" --heading -n static src
+
+# stdin path
+run "$g" -c include < "$big"
+run "$r" -c include < "$big"
 
 %install
 %make_install
